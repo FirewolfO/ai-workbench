@@ -173,7 +173,7 @@ func (s *Service) TestProvider(ctx context.Context, actor identity.Actor, id str
 	if err != nil {
 		return nil, err
 	}
-	latency, err := s.models.Test(ctx, provider.BaseURL, key)
+	latency, err := s.models.Test(ctx, provider.BaseURL, key, provider.DefaultModel)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrProvider, err)
 	}
@@ -454,7 +454,11 @@ func (s *Service) SendMessage(ctx context.Context, actor identity.Actor, convers
 	}
 	result, err := s.models.Complete(ctx, llm.CompletionRequest{BaseURL: provider.BaseURL, APIKey: key, Model: conversation.Model, Messages: messages, Temperature: 0.7})
 	if err != nil {
-		failed := &model.Message{ID: newID("msg"), ConversationID: conversation.ID, Role: "assistant", Content: "模型响应失败，请检查模型连接后重试。", Model: conversation.Model, Status: "failed"}
+		reason := strings.TrimSpace(err.Error())
+		if runes := []rune(reason); len(runes) > 400 {
+			reason = string(runes[:400]) + "..."
+		}
+		failed := &model.Message{ID: newID("msg"), ConversationID: conversation.ID, Role: "assistant", Content: "模型响应失败：" + reason, Model: conversation.Model, Status: "failed"}
 		_ = s.database.DB.Create(failed).Error
 		return nil, fmt.Errorf("%w: %v", ErrProvider, err)
 	}

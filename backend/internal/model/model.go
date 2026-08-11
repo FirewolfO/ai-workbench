@@ -72,3 +72,75 @@ type OAuthState struct {
 	ExpiresAt   time.Time `gorm:"index;not null"`
 	CreatedAt   time.Time
 }
+
+type NewsArticle struct {
+	ID          string    `gorm:"primaryKey;size:40" json:"id"`
+	SourceCode  string    `gorm:"size:60;index;not null" json:"sourceCode"`
+	SourceName  string    `gorm:"size:100;not null" json:"sourceName"`
+	ExternalID  string    `gorm:"size:500" json:"-"`
+	Title       string    `gorm:"size:500;not null" json:"title"`
+	Summary     string    `gorm:"type:text" json:"summary"`
+	URL         string    `gorm:"size:1000;uniqueIndex;not null" json:"url"`
+	Author      string    `gorm:"size:200" json:"author"`
+	PublishedAt time.Time `gorm:"index;not null" json:"publishedAt"`
+	FetchedAt   time.Time `gorm:"index;not null" json:"fetchedAt"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+	Favorite    bool      `gorm:"-" json:"favorite"`
+}
+
+type NewsFavorite struct {
+	ID        string    `gorm:"primaryKey;size:40" json:"id"`
+	OwnerID   string    `gorm:"size:100;uniqueIndex:idx_news_favorite_owner_article;not null" json:"-"`
+	ArticleID string    `gorm:"size:40;uniqueIndex:idx_news_favorite_owner_article;index;not null" json:"articleId"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+type TrackedPerson struct {
+	ID              string     `gorm:"primaryKey;size:40" json:"id"`
+	OwnerID         string     `gorm:"size:100;uniqueIndex:idx_tracked_owner_handle;not null" json:"-"`
+	Platform        string     `gorm:"size:20;not null;default:x" json:"platform"`
+	Handle          string     `gorm:"size:40;uniqueIndex:idx_tracked_owner_handle;not null" json:"handle"`
+	DisplayName     string     `gorm:"size:160;not null" json:"displayName"`
+	ExternalUserID  string     `gorm:"size:100;index" json:"-"`
+	ProfileImageURL string     `gorm:"size:1000" json:"profileImageUrl"`
+	Enabled         bool       `gorm:"not null;default:true" json:"enabled"`
+	LastFetchedAt   *time.Time `gorm:"index" json:"lastFetchedAt"`
+	LastError       string     `gorm:"size:500" json:"lastError"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	UpdatedAt       time.Time  `json:"updatedAt"`
+}
+
+type SocialPost struct {
+	ID          string    `gorm:"primaryKey;size:40" json:"id"`
+	OwnerID     string    `gorm:"size:100;uniqueIndex:idx_social_owner_external;index;not null" json:"-"`
+	PersonID    string    `gorm:"size:40;index;not null" json:"personId"`
+	ExternalID  string    `gorm:"size:100;uniqueIndex:idx_social_owner_external;not null" json:"-"`
+	Handle      string    `gorm:"size:40;index;not null" json:"handle"`
+	DisplayName string    `gorm:"size:160;not null" json:"displayName"`
+	Content     string    `gorm:"type:text;not null" json:"content"`
+	URL         string    `gorm:"size:1000;not null" json:"url"`
+	PublishedAt time.Time `gorm:"index;not null" json:"publishedAt"`
+	LikeCount   int       `gorm:"not null;default:0" json:"likeCount"`
+	RepostCount int       `gorm:"not null;default:0" json:"repostCount"`
+	ReplyCount  int       `gorm:"not null;default:0" json:"replyCount"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+	Favorite    bool      `gorm:"-" json:"favorite"`
+}
+
+type SocialPostFavorite struct {
+	ID        string    `gorm:"primaryKey;size:40" json:"id"`
+	OwnerID   string    `gorm:"size:100;uniqueIndex:idx_post_favorite_owner_post;not null" json:"-"`
+	PostID    string    `gorm:"size:40;uniqueIndex:idx_post_favorite_owner_post;index;not null" json:"postId"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+type SyncState struct {
+	Key           string     `gorm:"primaryKey;size:100" json:"key"`
+	LastAttemptAt *time.Time `json:"lastAttemptAt"`
+	LastSuccessAt *time.Time `json:"lastSuccessAt"`
+	LastError     string     `gorm:"size:500" json:"lastError"`
+	ItemsFetched  int        `gorm:"not null;default:0" json:"itemsFetched"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
+}

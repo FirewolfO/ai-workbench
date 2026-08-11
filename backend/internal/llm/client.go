@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -35,7 +36,7 @@ type CompletionResult struct {
 
 type Client interface {
 	Complete(context.Context, CompletionRequest) (*CompletionResult, error)
-	Test(context.Context, string, string) (time.Duration, error)
+	Test(context.Context, string, string, string) (time.Duration, error)
 }
 
 type HTTPClient struct{ client *http.Client }
@@ -72,6 +73,9 @@ func (c *HTTPClient) Complete(ctx context.Context, input CompletionRequest) (*Co
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 2048))
 		return nil, fmt.Errorf("模型服务返回 %d: %s", response.StatusCode, providerMessage(message))
 	}
+	if !isJSON(response.Header.Get("Content-Type")) {
+		return nil, fmt.Errorf("模型服务返回 %s 而不是 JSON，请检查 Base URL 是否指向 API 根路径（通常以 /v1 结尾）", contentType(response.Header.Get("Content-Type")))
+	}
 	var payload struct {
 		Model   string `json:"model"`
 		Choices []struct {
@@ -91,7 +95,7 @@ func (c *HTTPClient) Complete(ctx context.Context, input CompletionRequest) (*Co
 	}, nil
 }
 
-func (c *HTTPClient) Test(ctx context.Context, baseURL, apiKey string) (time.Duration, error) {
+func (c *HTTPClient) Test(ctx context.Context, baseURL, apiKey, model string) (time.Duration, error) {
 	target, err := endpoint(baseURL, "models")
 	if err != nil {
 		return 0, err
@@ -113,7 +117,37 @@ func (c *HTTPClient) Test(ctx context.Context, baseURL, apiKey string) (time.Dur
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return 0, fmt.Errorf("模型服务返回 %d", response.StatusCode)
 	}
-	return latency, nil
+	if !isJSON(response.Header.Get("Content-Type")) {
+		return 0, fmt.Errorf("模型列表返回 %s 而不是 JSON，请检查 Base URL 是否指向 API 根路径（通常以 /v1 结尾）", contentType(response.Header.Get("Content-Type")))
+	}
+	var models struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&models); err != nil {
+		return 0, fmt.Errorf("模型列表返回了无效 JSON")
+	}
+	completion, err := c.Complete(ctx, CompletionRequest{
+		BaseURL: baseURL, APIKey: apiKey, Model: model,
+		Messages: []Message{{Role: "user", Content: "Reply with OK."}}, Temperature: 0,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("模型对话测试失败: %w", err)
+	}
+	return latency + completion.Latency, nil
+}
+
+func isJSON(value string) bool {
+	mediaType, _, err := mime.ParseMediaType(value)
+	return err == nil && (mediaType == "application/json" || strings.HasSuffix(mediaType, "+json"))
+}
+
+func contentType(value string) string {
+	if value = strings.TrimSpace(value); value == "" {
+		return "未知内容类型"
+	}
+	return value
 }
 
 func endpoint(baseURL, path string) (string, error) {

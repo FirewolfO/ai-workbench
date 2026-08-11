@@ -3,6 +3,7 @@ module ai-workbench
 go 1.25.0
 
 require (
+	golang.org/x/net v0.30.0
 	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.1
 )

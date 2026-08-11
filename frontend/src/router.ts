@@ -18,6 +18,8 @@ const router = createRouter({
         { path: 'chat/:id?', name: 'chat', component: () => import('@/views/ChatView.vue'), meta: { title: '对话' } },
         { path: 'prompts', name: 'prompts', component: () => import('@/views/PromptsView.vue'), meta: { title: '提示词' } },
         { path: 'providers', name: 'providers', component: () => import('@/views/ProvidersView.vue'), meta: { title: '模型连接' } },
+        { path: 'news', name: 'news', component: () => import('@/views/NewsView.vue'), meta: { title: 'AI 热点' } },
+        { path: 'people', name: 'people', component: () => import('@/views/PeopleView.vue'), meta: { title: '大佬动态' } },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },

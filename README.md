@@ -45,6 +45,14 @@ npm --prefix frontend install
 
 默认配置位于 `backend/.env.example` 和 `frontend/.env.example`。工作区默认使用 `http://10.251.237.216:5177/oauth/authorize` 作为 People 登录入口；仅在浏览器与 People 都运行于同一台机器时，才应将 `AI_WORKBENCH_PEOPLE_AUTHORIZE_URL` 覆盖为 `http://localhost:5177/oauth/authorize`。还可在 `backend/.env` 覆盖模型密钥加密主密钥、OAuth Client Secret、允许来源和数据库路径。`AI_WORKBENCH_ENCRYPTION_KEY` 轮换前必须迁移已有模型密钥，否则旧密文将无法解密。
 
+## 每日 AI 情报
+
+后端每小时检查同步状态；距离上次成功同步达到 `AI_WORKBENCH_CONTENT_REFRESH_HOURS`（默认 24 小时）后自动补拉，也支持页面手动同步。
+
+- AI 热点使用各机构公开订阅源：[OpenAI News RSS](https://openai.com/news/rss.xml)、[Google AI RSS](https://blog.google/technology/ai/rss/)、[Hugging Face Blog Feed](https://huggingface.co/blog/feed.xml) 与 [arXiv cs.AI RSS](https://export.arxiv.org/rss/cs.AI)。文章按原文 URL 去重，收藏按 People 用户隔离。
+- 大佬动态默认关注 Codex 产品负责人 Tibor Blaho（`@btibor91`），并允许每位用户维护自己的 X 关注列表。接入遵循 X API v2 的 [User Lookup](https://docs.x.com/x-api/users/lookup/introduction) 与 [Get Posts](https://docs.x.com/x-api/users/get-posts) 接口。
+- X Bearer Token 仅通过后端环境变量 `AI_WORKBENCH_X_BEARER_TOKEN` 提供，不会返回浏览器或写入日志。未配置时 AI 热点仍可正常工作，人物动态页面会显示配置状态。
+
 ## 模型连接
 
 模型服务需兼容以下接口：

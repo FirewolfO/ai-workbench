@@ -17,7 +17,10 @@ func Open(dsn string) (*Store, error) {
 	if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
 		return nil, err
 	}
-	if err := db.AutoMigrate(&model.Provider{}, &model.Prompt{}, &model.Conversation{}, &model.Message{}, &model.Session{}, &model.OAuthState{}); err != nil {
+	if err := db.AutoMigrate(
+		&model.Provider{}, &model.Prompt{}, &model.Conversation{}, &model.Message{}, &model.Session{}, &model.OAuthState{},
+		&model.NewsArticle{}, &model.NewsFavorite{}, &model.TrackedPerson{}, &model.SocialPost{}, &model.SocialPostFavorite{}, &model.SyncState{},
+	); err != nil {
 		return nil, err
 	}
 	return &Store{DB: db}, nil

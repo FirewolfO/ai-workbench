@@ -1,5 +1,5 @@
 import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios'
-import type { Conversation, Dashboard, Message, Prompt, PromptInput, Provider, ProviderInput, Session, User } from './types'
+import type { ContentStatus, Conversation, Dashboard, Message, NewsResult, PeopleResult, Prompt, PromptInput, Provider, ProviderInput, Session, SocialPost, SyncState, TrackedPerson, User } from './types'
 
 interface Envelope<T> { code: string; message: string; data: T }
 interface RetryConfig extends InternalAxiosRequestConfig { _retry?: boolean }
@@ -57,4 +57,14 @@ export const workbenchApi = {
   updateConversation: (id: string, input: Partial<Pick<Conversation, 'title' | 'providerId' | 'model' | 'systemPrompt' | 'pinned'>>) => unwrap<Conversation>(api.patch(`/conversations/${id}`, input)),
   deleteConversation: (id: string) => unwrap<{ deleted: boolean }>(api.delete(`/conversations/${id}`)),
   sendMessage: (id: string, content: string) => unwrap<Message>(api.post(`/conversations/${id}/messages`, { content })),
+  contentStatus: () => unwrap<ContentStatus>(api.get('/content/status')),
+  news: (search = '', source = '', favorite = false) => unwrap<NewsResult>(api.get('/news', { params: { search, source, favorite } })),
+  refreshNews: () => unwrap<SyncState>(api.post('/news/refresh')),
+  favoriteNews: (id: string, favorite: boolean) => unwrap<{ favorite: boolean }>(api.put(`/news/${id}/favorite`, { favorite })),
+  people: () => unwrap<PeopleResult>(api.get('/people')),
+  addPerson: (handle: string, displayName: string) => unwrap<TrackedPerson>(api.post('/people', { handle, displayName })),
+  deletePerson: (id: string) => unwrap<{ deleted: boolean }>(api.delete(`/people/${id}`)),
+  refreshPeople: () => unwrap<SyncState>(api.post('/people/refresh')),
+  socialPosts: (personId = '', search = '', favorite = false) => unwrap<SocialPost[]>(api.get('/people/posts', { params: { personId, search, favorite } })),
+  favoritePost: (id: string, favorite: boolean) => unwrap<{ favorite: boolean }>(api.put(`/people/posts/${id}/favorite`, { favorite })),
 }

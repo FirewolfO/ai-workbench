@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 
 	"ai-workbench/internal/api"
 	"ai-workbench/internal/config"
+	"ai-workbench/internal/content"
 	"ai-workbench/internal/identity"
 	"ai-workbench/internal/llm"
 	"ai-workbench/internal/security"
@@ -29,7 +31,9 @@ func main() {
 	defer database.Close()
 	identities := identity.New(database, cfg.PermissionAPIBaseURL, cfg.PeopleAPIBaseURL, cfg.PeopleAuthorizeURL, cfg.PeopleClientID, cfg.PeopleClientSecret, cfg.OAuthRedirectURIs)
 	service := workbench.New(database, vault, llm.New())
-	server := api.New(cfg.Address, cfg.AllowedOrigins, identities, service)
+	contentService := content.New(database, content.DefaultSources, cfg.XAPIBaseURL, cfg.XBearerToken, cfg.ContentRefreshPeriod)
+	contentService.Start(context.Background())
+	server := api.New(cfg.Address, cfg.AllowedOrigins, identities, service, contentService)
 	log.Printf("AI Workbench 服务监听于 %s", cfg.Address)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)

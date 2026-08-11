@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChatLineRound, Connection, DataAnalysis, Expand, MagicStick, Menu as MenuIcon, SwitchButton } from '@element-plus/icons-vue'
+import { ChatLineRound, Connection, DataAnalysis, Expand, MagicStick, Menu as MenuIcon, SwitchButton, TrendCharts, UserFilled } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
@@ -11,6 +11,8 @@ const drawerOpen = ref(false)
 const pageTitle = computed(() => String(route.meta.title || 'AI 工作台'))
 const items = [
   { path: '/chat', label: '对话', icon: ChatLineRound },
+  { path: '/news', label: 'AI 热点', icon: TrendCharts },
+  { path: '/people', label: '大佬动态', icon: UserFilled },
   { path: '/prompts', label: '提示词', icon: MagicStick },
   { path: '/providers', label: '模型连接', icon: Connection },
   { path: '/dashboard', label: '用量概览', icon: DataAnalysis },

@@ -2,7 +2,9 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -16,6 +18,9 @@ type Config struct {
 	PeopleClientID       string
 	PeopleClientSecret   string
 	OAuthRedirectURIs    []string
+	XAPIBaseURL          string
+	XBearerToken         string
+	ContentRefreshPeriod time.Duration
 }
 
 func Load() Config {
@@ -30,7 +35,18 @@ func Load() Config {
 		PeopleClientID:       env("AI_WORKBENCH_PEOPLE_CLIENT_ID", "ai-workbench-ui"),
 		PeopleClientSecret:   env("AI_WORKBENCH_PEOPLE_CLIENT_SECRET", "ai-workbench-local-client-secret-change-me"),
 		OAuthRedirectURIs:    split(env("AI_WORKBENCH_OAUTH_REDIRECT_URIS", "http://localhost:5181/oauth/callback,http://127.0.0.1:5181/oauth/callback,http://10.251.237.216:5181/oauth/callback")),
+		XAPIBaseURL:          strings.TrimRight(env("AI_WORKBENCH_X_API_BASE_URL", "https://api.x.com/2"), "/"),
+		XBearerToken:         strings.TrimSpace(os.Getenv("AI_WORKBENCH_X_BEARER_TOKEN")),
+		ContentRefreshPeriod: hours("AI_WORKBENCH_CONTENT_REFRESH_HOURS", 24),
 	}
+}
+
+func hours(key string, fallback int) time.Duration {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
+	if err != nil || value < 1 {
+		value = fallback
+	}
+	return time.Duration(value) * time.Hour
 }
 
 func env(key, fallback string) string {

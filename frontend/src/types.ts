@@ -62,3 +62,22 @@ export interface Dashboard {
 
 export interface ProviderInput { name: string; baseUrl: string; defaultModel: string; apiKey: string; enabled?: boolean }
 export interface PromptInput { title: string; description: string; category: string; content: string; favorite?: boolean }
+
+export interface NewsArticle {
+  id: string
+  sourceCode: string
+  sourceName: string
+  title: string
+  summary: string
+  url: string
+  author: string
+  publishedAt: string
+  favorite: boolean
+}
+export interface ContentSource { code: string; name: string }
+export interface NewsResult { items: NewsArticle[]; sources: ContentSource[]; lastSuccessAt?: string; lastError: string }
+export interface TrackedPerson { id: string; platform: 'x'; handle: string; displayName: string; profileImageUrl: string; enabled: boolean; lastFetchedAt?: string; lastError: string }
+export interface PeopleResult { people: TrackedPerson[]; xConfigured: boolean; lastSuccessAt?: string; lastError: string }
+export interface SocialPost { id: string; personId: string; handle: string; displayName: string; content: string; url: string; publishedAt: string; likeCount: number; repostCount: number; replyCount: number; favorite: boolean }
+export interface SyncState { key: string; lastAttemptAt?: string; lastSuccessAt?: string; lastError: string; itemsFetched: number }
+export interface ContentStatus { xConfigured: boolean; refreshHours: number; newsLastSuccessAt?: string; newsLastError: string; peopleLastSuccessAt?: string; peopleLastError: string }

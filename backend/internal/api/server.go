@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"ai-workbench/internal/content"
 	"ai-workbench/internal/identity"
 	"ai-workbench/internal/workbench"
 )
@@ -25,12 +26,13 @@ type Server struct {
 	allowedOrigins map[string]bool
 	auth           authenticator
 	workbench      *workbench.Service
+	content        *content.Service
 }
 
 type actorContextKey struct{}
 
-func New(address string, allowedOrigins []string, auth authenticator, service *workbench.Service) *http.Server {
-	server := &Server{address: address, allowedOrigins: map[string]bool{}, auth: auth, workbench: service}
+func New(address string, allowedOrigins []string, auth authenticator, service *workbench.Service, contentService *content.Service) *http.Server {
+	server := &Server{address: address, allowedOrigins: map[string]bool{}, auth: auth, workbench: service, content: contentService}
 	for _, origin := range allowedOrigins {
 		server.allowedOrigins[origin] = true
 	}
@@ -57,6 +59,16 @@ func New(address string, allowedOrigins []string, auth authenticator, service *w
 	mux.Handle("PATCH /api/v1/conversations/{id}", server.requireAuth(http.HandlerFunc(server.updateConversation)))
 	mux.Handle("DELETE /api/v1/conversations/{id}", server.requireAuth(http.HandlerFunc(server.deleteConversation)))
 	mux.Handle("POST /api/v1/conversations/{id}/messages", server.requireAuth(http.HandlerFunc(server.sendMessage)))
+	mux.Handle("GET /api/v1/content/status", server.requireAuth(http.HandlerFunc(server.contentStatus)))
+	mux.Handle("GET /api/v1/news", server.requireAuth(http.HandlerFunc(server.news)))
+	mux.Handle("POST /api/v1/news/refresh", server.requireAuth(http.HandlerFunc(server.refreshNews)))
+	mux.Handle("PUT /api/v1/news/{id}/favorite", server.requireAuth(http.HandlerFunc(server.favoriteNews)))
+	mux.Handle("GET /api/v1/people", server.requireAuth(http.HandlerFunc(server.people)))
+	mux.Handle("POST /api/v1/people", server.requireAuth(http.HandlerFunc(server.addPerson)))
+	mux.Handle("DELETE /api/v1/people/{id}", server.requireAuth(http.HandlerFunc(server.deletePerson)))
+	mux.Handle("POST /api/v1/people/refresh", server.requireAuth(http.HandlerFunc(server.refreshPeople)))
+	mux.Handle("GET /api/v1/people/posts", server.requireAuth(http.HandlerFunc(server.socialPosts)))
+	mux.Handle("PUT /api/v1/people/posts/{id}/favorite", server.requireAuth(http.HandlerFunc(server.favoritePost)))
 	return &http.Server{Addr: address, Handler: server.middleware(mux), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 120 * time.Second}
 }
 
@@ -249,6 +261,78 @@ func (s *Server) sendMessage(writer http.ResponseWriter, request *http.Request) 
 	respond(writer, result, err, http.StatusCreated)
 }
 
+func (s *Server) contentStatus(writer http.ResponseWriter, request *http.Request) {
+	write(writer, http.StatusOK, s.content.Overview(actor(request)))
+}
+
+func (s *Server) news(writer http.ResponseWriter, request *http.Request) {
+	result, err := s.content.News(
+		actor(request), request.URL.Query().Get("search"), request.URL.Query().Get("source"), request.URL.Query().Get("favorite") == "true",
+	)
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) refreshNews(writer http.ResponseWriter, request *http.Request) {
+	result, err := s.content.RefreshNews(request.Context())
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) favoriteNews(writer http.ResponseWriter, request *http.Request) {
+	var input struct {
+		Favorite bool `json:"favorite"`
+	}
+	if !decode(writer, request, &input) {
+		return
+	}
+	err := s.content.FavoriteNews(actor(request), request.PathValue("id"), input.Favorite)
+	respond(writer, map[string]bool{"favorite": input.Favorite}, err, http.StatusOK)
+}
+
+func (s *Server) people(writer http.ResponseWriter, request *http.Request) {
+	result, err := s.content.People(actor(request))
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) addPerson(writer http.ResponseWriter, request *http.Request) {
+	var input struct {
+		Handle      string `json:"handle"`
+		DisplayName string `json:"displayName"`
+	}
+	if !decode(writer, request, &input) {
+		return
+	}
+	result, err := s.content.AddPerson(actor(request), input.Handle, input.DisplayName)
+	respond(writer, result, err, http.StatusCreated)
+}
+
+func (s *Server) deletePerson(writer http.ResponseWriter, request *http.Request) {
+	err := s.content.DeletePerson(actor(request), request.PathValue("id"))
+	respond(writer, map[string]bool{"deleted": err == nil}, err, http.StatusOK)
+}
+
+func (s *Server) refreshPeople(writer http.ResponseWriter, request *http.Request) {
+	result, err := s.content.RefreshPeople(request.Context(), actor(request))
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) socialPosts(writer http.ResponseWriter, request *http.Request) {
+	result, err := s.content.Posts(
+		actor(request), request.URL.Query().Get("personId"), request.URL.Query().Get("search"), request.URL.Query().Get("favorite") == "true",
+	)
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) favoritePost(writer http.ResponseWriter, request *http.Request) {
+	var input struct {
+		Favorite bool `json:"favorite"`
+	}
+	if !decode(writer, request, &input) {
+		return
+	}
+	err := s.content.FavoritePost(actor(request), request.PathValue("id"), input.Favorite)
+	respond(writer, map[string]bool{"favorite": input.Favorite}, err, http.StatusOK)
+}
+
 func actor(request *http.Request) identity.Actor {
 	return request.Context().Value(actorContextKey{}).(identity.Actor)
 }
@@ -281,6 +365,14 @@ func respond(writer http.ResponseWriter, data any, err error, successStatus int)
 
 func failError(writer http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, content.ErrInvalid):
+		fail(writer, http.StatusBadRequest, "INVALID_REQUEST", "X 用户名格式无效或已关注")
+	case errors.Is(err, content.ErrNotFound):
+		fail(writer, http.StatusNotFound, "NOT_FOUND", "内容不存在")
+	case errors.Is(err, content.ErrXNotConfigured):
+		fail(writer, http.StatusServiceUnavailable, "X_NOT_CONFIGURED", "尚未配置 X API Bearer Token")
+	case errors.Is(err, content.ErrUpstream):
+		fail(writer, http.StatusBadGateway, "CONTENT_SOURCE_UNAVAILABLE", "内容源暂时不可用，请稍后重试")
 	case errors.Is(err, workbench.ErrInvalid):
 		fail(writer, http.StatusBadRequest, "INVALID_REQUEST", "请求参数无效")
 	case errors.Is(err, workbench.ErrNotFound):

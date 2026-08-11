@@ -16,7 +16,7 @@ type fakeModels struct{}
 func (fakeModels) Complete(_ context.Context, request llm.CompletionRequest) (*llm.CompletionResult, error) {
 	return &llm.CompletionResult{Content: "回答", Model: request.Model, PromptTokens: 8, CompletionTokens: 3, Latency: 20 * time.Millisecond}, nil
 }
-func (fakeModels) Test(context.Context, string, string) (time.Duration, error) {
+func (fakeModels) Test(context.Context, string, string, string) (time.Duration, error) {
 	return 10 * time.Millisecond, nil
 }
 

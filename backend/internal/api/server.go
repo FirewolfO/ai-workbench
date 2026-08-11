@@ -62,6 +62,7 @@ func New(address string, allowedOrigins []string, auth authenticator, service *w
 	mux.Handle("GET /api/v1/content/status", server.requireAuth(http.HandlerFunc(server.contentStatus)))
 	mux.Handle("GET /api/v1/news", server.requireAuth(http.HandlerFunc(server.news)))
 	mux.Handle("POST /api/v1/news/refresh", server.requireAuth(http.HandlerFunc(server.refreshNews)))
+	mux.Handle("POST /api/v1/news/summaries", server.requireAuth(http.HandlerFunc(server.summarizeNews)))
 	mux.Handle("PUT /api/v1/news/{id}/favorite", server.requireAuth(http.HandlerFunc(server.favoriteNews)))
 	mux.Handle("GET /api/v1/people", server.requireAuth(http.HandlerFunc(server.people)))
 	mux.Handle("POST /api/v1/people", server.requireAuth(http.HandlerFunc(server.addPerson)))
@@ -277,6 +278,17 @@ func (s *Server) refreshNews(writer http.ResponseWriter, request *http.Request) 
 	respond(writer, result, err, http.StatusOK)
 }
 
+func (s *Server) summarizeNews(writer http.ResponseWriter, request *http.Request) {
+	var input struct {
+		ArticleIDs []string `json:"articleIds"`
+	}
+	if !decode(writer, request, &input) {
+		return
+	}
+	result, err := s.workbench.SummarizeNews(request.Context(), actor(request), input.ArticleIDs)
+	respond(writer, result, err, http.StatusOK)
+}
+
 func (s *Server) favoriteNews(writer http.ResponseWriter, request *http.Request) {
 	var input struct {
 		Favorite bool `json:"favorite"`
@@ -381,6 +393,8 @@ func failError(writer http.ResponseWriter, err error) {
 		fail(writer, http.StatusConflict, "RESOURCE_IN_USE", "模型连接仍被对话使用")
 	case errors.Is(err, workbench.ErrProvider):
 		fail(writer, http.StatusBadGateway, "MODEL_UNAVAILABLE", strings.TrimPrefix(err.Error(), workbench.ErrProvider.Error()+": "))
+	case errors.Is(err, workbench.ErrNoProvider):
+		fail(writer, http.StatusConflict, "MODEL_NOT_CONFIGURED", "请先配置并启用一个模型连接")
 	default:
 		log.Printf("AI Workbench request failed: %v", err)
 		fail(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "服务暂时不可用")

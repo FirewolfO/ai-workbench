@@ -69,6 +69,7 @@ export interface NewsArticle {
   sourceName: string
   title: string
   summary: string
+  chineseSummary: string
   url: string
   author: string
   publishedAt: string
@@ -76,6 +77,7 @@ export interface NewsArticle {
 }
 export interface ContentSource { code: string; name: string }
 export interface NewsResult { items: NewsArticle[]; sources: ContentSource[]; lastSuccessAt?: string; lastError: string }
+export interface NewsSummaryResult { generated: number; summaries: Record<string, string> }
 export interface TrackedPerson { id: string; platform: 'x'; handle: string; displayName: string; profileImageUrl: string; enabled: boolean; lastFetchedAt?: string; lastError: string }
 export interface PeopleResult { people: TrackedPerson[]; xConfigured: boolean; lastSuccessAt?: string; lastError: string }
 export interface SocialPost { id: string; personId: string; handle: string; displayName: string; content: string; url: string; publishedAt: string; likeCount: number; repostCount: number; replyCount: number; favorite: boolean }

@@ -2,11 +2,13 @@ package workbench
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"ai-workbench/internal/identity"
 	"ai-workbench/internal/llm"
+	"ai-workbench/internal/model"
 	"ai-workbench/internal/security"
 	"ai-workbench/internal/store"
 )
@@ -21,6 +23,10 @@ func (fakeModels) Test(context.Context, string, string, string) (time.Duration, 
 }
 
 func testService(t *testing.T) *Service {
+	return testServiceWithModels(t, fakeModels{})
+}
+
+func testServiceWithModels(t *testing.T, models llm.Client) *Service {
 	t.Helper()
 	database, err := store.Open("file:" + t.Name() + "?mode=memory&cache=shared")
 	if err != nil {
@@ -31,7 +37,16 @@ func testService(t *testing.T) *Service {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(database, vault, fakeModels{})
+	return New(database, vault, models)
+}
+
+type summaryModels struct{}
+
+func (summaryModels) Complete(_ context.Context, _ llm.CompletionRequest) (*llm.CompletionResult, error) {
+	return &llm.CompletionResult{Content: "```json\n[{\"id\":\"news_one\",\"summary\":\"这是一条经过压缩的中文人工智能热点概要，说明事件内容及其主要价值。\"}]\n```", Model: "model"}, nil
+}
+func (summaryModels) Test(context.Context, string, string, string) (time.Duration, error) {
+	return 0, nil
 }
 
 func TestPersonalDataIsolationAndChat(t *testing.T) {
@@ -78,6 +93,45 @@ func TestPromptLifecycleAndProviderConflict(t *testing.T) {
 	used, err := service.UsePrompt(actor, prompt.ID)
 	if err != nil || used.UseCount != 1 {
 		t.Fatalf("UsePrompt() = %#v, %v", used, err)
+	}
+}
+
+func TestSummarizeNewsUsesOwnedProviderAndCachesResult(t *testing.T) {
+	service := testServiceWithModels(t, summaryModels{})
+	actor := identity.Actor{ID: "alice", Username: "alice"}
+	if _, err := service.CreateProvider(actor, ProviderInput{Name: "Local", BaseURL: "http://localhost/v1", DefaultModel: "model"}); err != nil {
+		t.Fatal(err)
+	}
+	article := model.NewsArticle{ID: "news_one", SourceCode: "test", SourceName: "Test", Title: "Agent release", Summary: "An agent was released.", URL: "https://example.com/agent", PublishedAt: time.Now(), FetchedAt: time.Now()}
+	if err := service.database.DB.Create(&article).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.database.DB.Model(&model.NewsArticle{}).Where("id = ?", article.ID).UpdateColumn("chinese_summary", nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.SummarizeNews(context.Background(), actor, []string{article.ID})
+	if err != nil || result.Generated != 1 || result.Summaries[article.ID] == "" {
+		t.Fatalf("SummarizeNews() = %#v, %v", result, err)
+	}
+	var saved model.NewsArticle
+	if err := service.database.DB.First(&saved, "id = ?", article.ID).Error; err != nil || saved.ChineseSummary != result.Summaries[article.ID] {
+		t.Fatalf("unexpected cached summary: %#v, %v", saved, err)
+	}
+	again, err := service.SummarizeNews(context.Background(), actor, []string{article.ID})
+	if err != nil || again.Generated != 0 {
+		t.Fatalf("cached summary should not be regenerated: %#v, %v", again, err)
+	}
+}
+
+func TestSummarizeNewsRequiresEnabledProvider(t *testing.T) {
+	service := testService(t)
+	article := model.NewsArticle{ID: "news_two", SourceCode: "test", SourceName: "Test", Title: "News", URL: "https://example.com/news", PublishedAt: time.Now(), FetchedAt: time.Now()}
+	if err := service.database.DB.Create(&article).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, err := service.SummarizeNews(context.Background(), identity.Actor{Username: "alice"}, []string{article.ID})
+	if !errors.Is(err, ErrNoProvider) {
+		t.Fatalf("expected ErrNoProvider, got %v", err)
 	}
 }
 

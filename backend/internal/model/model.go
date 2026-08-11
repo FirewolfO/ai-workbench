@@ -74,19 +74,20 @@ type OAuthState struct {
 }
 
 type NewsArticle struct {
-	ID          string    `gorm:"primaryKey;size:40" json:"id"`
-	SourceCode  string    `gorm:"size:60;index;not null" json:"sourceCode"`
-	SourceName  string    `gorm:"size:100;not null" json:"sourceName"`
-	ExternalID  string    `gorm:"size:500" json:"-"`
-	Title       string    `gorm:"size:500;not null" json:"title"`
-	Summary     string    `gorm:"type:text" json:"summary"`
-	URL         string    `gorm:"size:1000;uniqueIndex;not null" json:"url"`
-	Author      string    `gorm:"size:200" json:"author"`
-	PublishedAt time.Time `gorm:"index;not null" json:"publishedAt"`
-	FetchedAt   time.Time `gorm:"index;not null" json:"fetchedAt"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
-	Favorite    bool      `gorm:"-" json:"favorite"`
+	ID             string    `gorm:"primaryKey;size:40" json:"id"`
+	SourceCode     string    `gorm:"size:60;index;not null" json:"sourceCode"`
+	SourceName     string    `gorm:"size:100;not null" json:"sourceName"`
+	ExternalID     string    `gorm:"size:500" json:"-"`
+	Title          string    `gorm:"size:500;not null" json:"title"`
+	Summary        string    `gorm:"type:text" json:"summary"`
+	ChineseSummary string    `gorm:"type:text" json:"chineseSummary"`
+	URL            string    `gorm:"size:1000;uniqueIndex;not null" json:"url"`
+	Author         string    `gorm:"size:200" json:"author"`
+	PublishedAt    time.Time `gorm:"index;not null" json:"publishedAt"`
+	FetchedAt      time.Time `gorm:"index;not null" json:"fetchedAt"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+	Favorite       bool      `gorm:"-" json:"favorite"`
 }
 
 type NewsFavorite struct {

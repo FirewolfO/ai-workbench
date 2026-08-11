@@ -1,0 +1,308 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+
+	"ai-workbench/internal/identity"
+	"ai-workbench/internal/workbench"
+)
+
+type authenticator interface {
+	AuthorizationURL(string) (string, error)
+	Exchange(context.Context, string, string, string) (*identity.SessionResult, error)
+	Authenticate(context.Context, string) (*identity.Actor, error)
+	Logout(string) error
+}
+
+type Server struct {
+	address        string
+	allowedOrigins map[string]bool
+	auth           authenticator
+	workbench      *workbench.Service
+}
+
+type actorContextKey struct{}
+
+func New(address string, allowedOrigins []string, auth authenticator, service *workbench.Service) *http.Server {
+	server := &Server{address: address, allowedOrigins: map[string]bool{}, auth: auth, workbench: service}
+	for _, origin := range allowedOrigins {
+		server.allowedOrigins[origin] = true
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", server.health)
+	mux.HandleFunc("GET /api/v1/auth/oauth/url", server.oauthURL)
+	mux.HandleFunc("POST /api/v1/auth/oauth/callback", server.oauthCallback)
+	mux.Handle("GET /api/v1/auth/me", server.requireAuth(http.HandlerFunc(server.me)))
+	mux.Handle("POST /api/v1/auth/logout", server.requireAuth(http.HandlerFunc(server.logout)))
+	mux.Handle("GET /api/v1/dashboard", server.requireAuth(http.HandlerFunc(server.dashboard)))
+	mux.Handle("GET /api/v1/providers", server.requireAuth(http.HandlerFunc(server.providers)))
+	mux.Handle("POST /api/v1/providers", server.requireAuth(http.HandlerFunc(server.createProvider)))
+	mux.Handle("PUT /api/v1/providers/{id}", server.requireAuth(http.HandlerFunc(server.updateProvider)))
+	mux.Handle("DELETE /api/v1/providers/{id}", server.requireAuth(http.HandlerFunc(server.deleteProvider)))
+	mux.Handle("POST /api/v1/providers/{id}/test", server.requireAuth(http.HandlerFunc(server.testProvider)))
+	mux.Handle("GET /api/v1/prompts", server.requireAuth(http.HandlerFunc(server.prompts)))
+	mux.Handle("POST /api/v1/prompts", server.requireAuth(http.HandlerFunc(server.createPrompt)))
+	mux.Handle("PUT /api/v1/prompts/{id}", server.requireAuth(http.HandlerFunc(server.updatePrompt)))
+	mux.Handle("DELETE /api/v1/prompts/{id}", server.requireAuth(http.HandlerFunc(server.deletePrompt)))
+	mux.Handle("POST /api/v1/prompts/{id}/use", server.requireAuth(http.HandlerFunc(server.usePrompt)))
+	mux.Handle("GET /api/v1/conversations", server.requireAuth(http.HandlerFunc(server.conversations)))
+	mux.Handle("POST /api/v1/conversations", server.requireAuth(http.HandlerFunc(server.createConversation)))
+	mux.Handle("GET /api/v1/conversations/{id}", server.requireAuth(http.HandlerFunc(server.conversation)))
+	mux.Handle("PATCH /api/v1/conversations/{id}", server.requireAuth(http.HandlerFunc(server.updateConversation)))
+	mux.Handle("DELETE /api/v1/conversations/{id}", server.requireAuth(http.HandlerFunc(server.deleteConversation)))
+	mux.Handle("POST /api/v1/conversations/{id}/messages", server.requireAuth(http.HandlerFunc(server.sendMessage)))
+	return &http.Server{Addr: address, Handler: server.middleware(mux), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 120 * time.Second}
+}
+
+func (s *Server) middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("X-Content-Type-Options", "nosniff")
+		writer.Header().Set("Referrer-Policy", "no-referrer")
+		writer.Header().Set("Cache-Control", "no-store")
+		origin := request.Header.Get("Origin")
+		if origin != "" && s.allowedOrigins[origin] {
+			writer.Header().Set("Access-Control-Allow-Origin", origin)
+			writer.Header().Set("Vary", "Origin")
+			writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		}
+		if request.Method == http.MethodOptions {
+			if origin != "" && !s.allowedOrigins[origin] {
+				writer.WriteHeader(http.StatusForbidden)
+				return
+			}
+			writer.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func (s *Server) requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		token := bearer(request.Header.Get("Authorization"))
+		actor, err := s.auth.Authenticate(request.Context(), token)
+		if err != nil {
+			fail(writer, http.StatusUnauthorized, "UNAUTHORIZED", "登录已过期，请重新登录")
+			return
+		}
+		next.ServeHTTP(writer, request.WithContext(context.WithValue(request.Context(), actorContextKey{}, *actor)))
+	})
+}
+
+func (s *Server) health(writer http.ResponseWriter, _ *http.Request) {
+	write(writer, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) oauthURL(writer http.ResponseWriter, request *http.Request) {
+	target, err := s.auth.AuthorizationURL(request.URL.Query().Get("redirect_uri"))
+	if err != nil {
+		fail(writer, http.StatusBadRequest, "INVALID_REDIRECT_URI", "OAuth 回调地址无效")
+		return
+	}
+	write(writer, http.StatusOK, map[string]string{"url": target})
+}
+
+func (s *Server) oauthCallback(writer http.ResponseWriter, request *http.Request) {
+	var input struct{ Code, State, RedirectURI string }
+	if !decode(writer, request, &input) {
+		return
+	}
+	result, err := s.auth.Exchange(request.Context(), input.Code, input.State, input.RedirectURI)
+	if err != nil {
+		fail(writer, http.StatusUnauthorized, "OAUTH_FAILED", "People OAuth 登录失败")
+		return
+	}
+	write(writer, http.StatusOK, result)
+}
+
+func (s *Server) me(writer http.ResponseWriter, request *http.Request) {
+	write(writer, http.StatusOK, map[string]any{"user": actor(request)})
+}
+
+func (s *Server) logout(writer http.ResponseWriter, request *http.Request) {
+	if err := s.auth.Logout(bearer(request.Header.Get("Authorization"))); err != nil {
+		failError(writer, err)
+		return
+	}
+	write(writer, http.StatusOK, map[string]bool{"loggedOut": true})
+}
+
+func (s *Server) dashboard(writer http.ResponseWriter, request *http.Request) {
+	result, err := s.workbench.Dashboard(actor(request))
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) providers(writer http.ResponseWriter, request *http.Request) {
+	result, err := s.workbench.Providers(actor(request))
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) createProvider(writer http.ResponseWriter, request *http.Request) {
+	var input workbench.ProviderInput
+	if !decode(writer, request, &input) {
+		return
+	}
+	result, err := s.workbench.CreateProvider(actor(request), input)
+	respond(writer, result, err, http.StatusCreated)
+}
+
+func (s *Server) updateProvider(writer http.ResponseWriter, request *http.Request) {
+	var input workbench.ProviderInput
+	if !decode(writer, request, &input) {
+		return
+	}
+	result, err := s.workbench.UpdateProvider(actor(request), request.PathValue("id"), input)
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) deleteProvider(writer http.ResponseWriter, request *http.Request) {
+	err := s.workbench.DeleteProvider(actor(request), request.PathValue("id"))
+	respond(writer, map[string]bool{"deleted": err == nil}, err, http.StatusOK)
+}
+
+func (s *Server) testProvider(writer http.ResponseWriter, request *http.Request) {
+	result, err := s.workbench.TestProvider(request.Context(), actor(request), request.PathValue("id"))
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) prompts(writer http.ResponseWriter, request *http.Request) {
+	result, err := s.workbench.Prompts(actor(request), request.URL.Query().Get("search"))
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) createPrompt(writer http.ResponseWriter, request *http.Request) {
+	var input workbench.PromptInput
+	if !decode(writer, request, &input) {
+		return
+	}
+	result, err := s.workbench.CreatePrompt(actor(request), input)
+	respond(writer, result, err, http.StatusCreated)
+}
+
+func (s *Server) updatePrompt(writer http.ResponseWriter, request *http.Request) {
+	var input workbench.PromptInput
+	if !decode(writer, request, &input) {
+		return
+	}
+	result, err := s.workbench.UpdatePrompt(actor(request), request.PathValue("id"), input)
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) deletePrompt(writer http.ResponseWriter, request *http.Request) {
+	err := s.workbench.DeletePrompt(actor(request), request.PathValue("id"))
+	respond(writer, map[string]bool{"deleted": err == nil}, err, http.StatusOK)
+}
+
+func (s *Server) usePrompt(writer http.ResponseWriter, request *http.Request) {
+	result, err := s.workbench.UsePrompt(actor(request), request.PathValue("id"))
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) conversations(writer http.ResponseWriter, request *http.Request) {
+	result, err := s.workbench.Conversations(actor(request), request.URL.Query().Get("search"))
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) createConversation(writer http.ResponseWriter, request *http.Request) {
+	var input workbench.ConversationInput
+	if !decode(writer, request, &input) {
+		return
+	}
+	result, err := s.workbench.CreateConversation(actor(request), input)
+	respond(writer, result, err, http.StatusCreated)
+}
+
+func (s *Server) conversation(writer http.ResponseWriter, request *http.Request) {
+	result, err := s.workbench.Conversation(actor(request), request.PathValue("id"))
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) updateConversation(writer http.ResponseWriter, request *http.Request) {
+	var input workbench.ConversationPatch
+	if !decode(writer, request, &input) {
+		return
+	}
+	result, err := s.workbench.UpdateConversation(actor(request), request.PathValue("id"), input)
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) deleteConversation(writer http.ResponseWriter, request *http.Request) {
+	err := s.workbench.DeleteConversation(actor(request), request.PathValue("id"))
+	respond(writer, map[string]bool{"deleted": err == nil}, err, http.StatusOK)
+}
+
+func (s *Server) sendMessage(writer http.ResponseWriter, request *http.Request) {
+	var input struct {
+		Content string `json:"content"`
+	}
+	if !decode(writer, request, &input) {
+		return
+	}
+	result, err := s.workbench.SendMessage(request.Context(), actor(request), request.PathValue("id"), input.Content)
+	respond(writer, result, err, http.StatusCreated)
+}
+
+func actor(request *http.Request) identity.Actor {
+	return request.Context().Value(actorContextKey{}).(identity.Actor)
+}
+
+func bearer(value string) string {
+	if !strings.HasPrefix(value, "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(value, "Bearer "))
+}
+
+func decode(writer http.ResponseWriter, request *http.Request, target any) bool {
+	request.Body = http.MaxBytesReader(writer, request.Body, 1<<20)
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		fail(writer, http.StatusBadRequest, "INVALID_REQUEST", "请求内容无效")
+		return false
+	}
+	return true
+}
+
+func respond(writer http.ResponseWriter, data any, err error, successStatus int) {
+	if err != nil {
+		failError(writer, err)
+		return
+	}
+	write(writer, successStatus, data)
+}
+
+func failError(writer http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, workbench.ErrInvalid):
+		fail(writer, http.StatusBadRequest, "INVALID_REQUEST", "请求参数无效")
+	case errors.Is(err, workbench.ErrNotFound):
+		fail(writer, http.StatusNotFound, "NOT_FOUND", "资源不存在")
+	case errors.Is(err, workbench.ErrConflict):
+		fail(writer, http.StatusConflict, "RESOURCE_IN_USE", "模型连接仍被对话使用")
+	case errors.Is(err, workbench.ErrProvider):
+		fail(writer, http.StatusBadGateway, "MODEL_UNAVAILABLE", strings.TrimPrefix(err.Error(), workbench.ErrProvider.Error()+": "))
+	default:
+		log.Printf("AI Workbench request failed: %v", err)
+		fail(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "服务暂时不可用")
+	}
+}
+
+func write(writer http.ResponseWriter, status int, data any) {
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.WriteHeader(status)
+	_ = json.NewEncoder(writer).Encode(map[string]any{"code": "OK", "message": "success", "data": data})
+}
+
+func fail(writer http.ResponseWriter, status int, code, message string) {
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.WriteHeader(status)
+	_ = json.NewEncoder(writer).Encode(map[string]any{"code": code, "message": message, "data": nil})
+}

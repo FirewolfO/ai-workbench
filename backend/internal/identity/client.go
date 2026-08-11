@@ -1,0 +1,200 @@
+package identity
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"ai-workbench/internal/model"
+	"ai-workbench/internal/store"
+
+	"gorm.io/gorm"
+)
+
+var ErrUnauthorized = errors.New("unauthorized")
+
+type Actor struct {
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName"`
+	Source      string `json:"-"`
+}
+
+type SessionResult struct {
+	AccessToken string    `json:"accessToken"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+	User        Actor     `json:"user"`
+}
+
+type Client struct {
+	database        *store.Store
+	permissionBase  string
+	peopleBase      string
+	peopleAuthorize string
+	clientID        string
+	clientSecret    string
+	redirectURIs    map[string]bool
+	httpClient      *http.Client
+}
+
+func New(database *store.Store, permissionBase, peopleBase, peopleAuthorize, clientID, clientSecret string, redirectURIs []string) *Client {
+	allowed := make(map[string]bool, len(redirectURIs))
+	for _, item := range redirectURIs {
+		allowed[item] = true
+	}
+	return &Client{
+		database: database, permissionBase: strings.TrimRight(permissionBase, "/"), peopleBase: strings.TrimRight(peopleBase, "/"),
+		peopleAuthorize: peopleAuthorize, clientID: clientID, clientSecret: clientSecret, redirectURIs: allowed,
+		httpClient: &http.Client{Timeout: 15 * time.Second},
+	}
+}
+
+func (c *Client) AuthorizationURL(redirectURI string) (string, error) {
+	if !c.redirectURIs[redirectURI] {
+		return "", fmt.Errorf("redirect URI is not allowed")
+	}
+	state, err := randomToken(24)
+	if err != nil {
+		return "", err
+	}
+	if err := c.database.DB.Create(&model.OAuthState{StateHash: hash(state), RedirectURI: redirectURI, ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}).Error; err != nil {
+		return "", err
+	}
+	target, err := url.Parse(c.peopleAuthorize)
+	if err != nil || !target.IsAbs() {
+		return "", fmt.Errorf("invalid People authorize URL")
+	}
+	target.RawQuery = url.Values{
+		"client_id": {c.clientID}, "redirect_uri": {redirectURI}, "response_type": {"code"},
+		"scope": {"openid profile"}, "state": {state},
+	}.Encode()
+	return target.String(), nil
+}
+
+func (c *Client) Exchange(ctx context.Context, code, state, redirectURI string) (*SessionResult, error) {
+	var saved model.OAuthState
+	err := c.database.DB.Where("state_hash = ? AND redirect_uri = ? AND expires_at > ?", hash(state), redirectURI, time.Now().UTC()).First(&saved).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrUnauthorized
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := c.database.DB.Delete(&saved).Error; err != nil {
+		return nil, err
+	}
+	actor, err := c.exchangePeople(ctx, strings.TrimSpace(code), redirectURI)
+	if err != nil {
+		return nil, err
+	}
+	token, err := randomToken(32)
+	if err != nil {
+		return nil, err
+	}
+	expiresAt := time.Now().UTC().Add(12 * time.Hour)
+	if err := c.database.DB.Create(&model.Session{TokenHash: hash(token), Username: actor.Username, DisplayName: actor.DisplayName, ExpiresAt: expiresAt}).Error; err != nil {
+		return nil, err
+	}
+	return &SessionResult{AccessToken: token, ExpiresAt: expiresAt, User: *actor}, nil
+}
+
+func (c *Client) Authenticate(ctx context.Context, token string) (*Actor, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, ErrUnauthorized
+	}
+	var session model.Session
+	if err := c.database.DB.Where("token_hash = ? AND expires_at > ?", hash(token), time.Now().UTC()).First(&session).Error; err == nil {
+		return &Actor{ID: session.Username, Username: session.Username, DisplayName: session.DisplayName, Source: "people"}, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	return c.permissionIdentity(ctx, token)
+}
+
+func (c *Client) Logout(token string) error {
+	return c.database.DB.Where("token_hash = ?", hash(strings.TrimSpace(token))).Delete(&model.Session{}).Error
+}
+
+func (c *Client) exchangePeople(ctx context.Context, code, redirectURI string) (*Actor, error) {
+	values := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {redirectURI}}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.peopleBase+"/oauth/token", strings.NewReader(values.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.SetBasicAuth(c.clientID, c.clientSecret)
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("People token request: %w", err)
+	}
+	defer response.Body.Close()
+	var token struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&token); err != nil || response.StatusCode != http.StatusOK || token.AccessToken == "" {
+		return nil, ErrUnauthorized
+	}
+	request, err = http.NewRequestWithContext(ctx, http.MethodGet, c.peopleBase+"/oauth/userinfo", nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	response, err = c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("People userinfo request: %w", err)
+	}
+	defer response.Body.Close()
+	var employee struct{ ID, Username, DisplayName, Status string }
+	if err := json.NewDecoder(response.Body).Decode(&employee); err != nil || response.StatusCode != http.StatusOK || employee.Username == "" || employee.Status != "enabled" {
+		return nil, ErrUnauthorized
+	}
+	return &Actor{ID: employee.Username, Username: employee.Username, DisplayName: employee.DisplayName, Source: "people"}, nil
+}
+
+func (c *Client) permissionIdentity(ctx context.Context, token string) (*Actor, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.permissionBase+"/auth/me", nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("Permission identity request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, ErrUnauthorized
+	}
+	var payload struct {
+		Data struct {
+			User struct{ ID, Username, DisplayName string } `json:"user"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil || payload.Data.User.Username == "" {
+		return nil, ErrUnauthorized
+	}
+	user := payload.Data.User
+	return &Actor{ID: user.Username, Username: user.Username, DisplayName: user.DisplayName, Source: "permission"}, nil
+}
+
+func randomToken(size int) (string, error) {
+	value := make([]byte, size)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(value), nil
+}
+
+func hash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}

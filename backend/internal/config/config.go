@@ -26,7 +26,7 @@ func Load() Config {
 		EncryptionKey:        env("AI_WORKBENCH_ENCRYPTION_KEY", "local-ai-workbench-encryption-key-change-me"),
 		PermissionAPIBaseURL: strings.TrimRight(env("AI_WORKBENCH_PERMISSION_API_BASE_URL", "http://127.0.0.1:8081/api/v1"), "/"),
 		PeopleAPIBaseURL:     strings.TrimRight(env("AI_WORKBENCH_PEOPLE_API_BASE_URL", "http://127.0.0.1:8082/api/open/people"), "/"),
-		PeopleAuthorizeURL:   env("AI_WORKBENCH_PEOPLE_AUTHORIZE_URL", "http://localhost:5177/oauth/authorize"),
+		PeopleAuthorizeURL:   env("AI_WORKBENCH_PEOPLE_AUTHORIZE_URL", "http://10.251.237.216:5177/oauth/authorize"),
 		PeopleClientID:       env("AI_WORKBENCH_PEOPLE_CLIENT_ID", "ai-workbench-ui"),
 		PeopleClientSecret:   env("AI_WORKBENCH_PEOPLE_CLIENT_SECRET", "ai-workbench-local-client-secret-change-me"),
 		OAuthRedirectURIs:    split(env("AI_WORKBENCH_OAUTH_REDIRECT_URIS", "http://localhost:5181/oauth/callback,http://127.0.0.1:5181/oauth/callback,http://10.251.237.216:5181/oauth/callback")),

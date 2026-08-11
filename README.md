@@ -43,7 +43,7 @@ npm --prefix frontend install
 - AI Workbench API：`http://localhost:8087`
 - 统一 Admin UI：`http://localhost:5178/ai-workbench/chat`
 
-默认配置位于 `backend/.env.example` 和 `frontend/.env.example`。可在 `backend/.env` 覆盖模型密钥加密主密钥、People 地址、OAuth Client Secret、允许来源和数据库路径。`AI_WORKBENCH_ENCRYPTION_KEY` 轮换前必须迁移已有模型密钥，否则旧密文将无法解密。
+默认配置位于 `backend/.env.example` 和 `frontend/.env.example`。工作区默认使用 `http://10.251.237.216:5177/oauth/authorize` 作为 People 登录入口；仅在浏览器与 People 都运行于同一台机器时，才应将 `AI_WORKBENCH_PEOPLE_AUTHORIZE_URL` 覆盖为 `http://localhost:5177/oauth/authorize`。还可在 `backend/.env` 覆盖模型密钥加密主密钥、OAuth Client Secret、允许来源和数据库路径。`AI_WORKBENCH_ENCRYPTION_KEY` 轮换前必须迁移已有模型密钥，否则旧密文将无法解密。
 
 ## 模型连接
 

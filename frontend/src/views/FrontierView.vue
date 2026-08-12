@@ -13,6 +13,7 @@ const languages = ['Python', 'TypeScript', 'JavaScript', 'Go', 'Rust', 'Java', '
 const categoryName = computed(() => categories.find((item) => item.value === filters.category)?.label || '项目')
 const compact = (value: number) => new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
 const activeDate = (value: string) => new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' }).format(-Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 86400000)), 'day')
+const syncedAt = computed(() => result.value.lastSuccessAt ? new Date(result.value.lastSuccessAt).toLocaleString('zh-CN') : '等待首次同步')
 
 async function load() {
   loading.value = true
@@ -39,7 +40,7 @@ onMounted(load)
       <el-button type="primary" :icon="Search" @click="load">发现</el-button>
     </section>
 
-    <div class="frontier-status"><span>找到 {{ result.total.toLocaleString() }} 个相关{{ categoryName }}</span><span v-if="result.stale">GitHub 暂时不可用，当前展示缓存结果</span><span v-else-if="result.rateLimit.limit">本次 GitHub 搜索后剩余额度 {{ result.rateLimit.remaining }}/{{ result.rateLimit.limit }}</span></div>
+    <div class="frontier-status"><span>每天 11:00 自动更新 · 最近同步：{{ syncedAt }}</span><span v-if="result.stale">GitHub 暂时不可用，当前展示缓存结果</span><span v-else>找到 {{ result.total.toLocaleString() }} 个相关{{ categoryName }}<template v-if="result.rateLimit.limit"> · GitHub 额度 {{ result.rateLimit.remaining }}/{{ result.rateLimit.limit }}</template></span></div>
 
     <section v-loading="loading" class="frontier-grid">
       <article v-for="item in result.items" :key="item.id">

@@ -10,7 +10,7 @@ const conversation = {
 }
 
 const frontier = {
-  total: 1264, generatedAt: '2026-08-12T07:00:00Z', githubTokenSet: true, stale: false,
+  total: 1264, generatedAt: '2026-08-12T07:00:00Z', lastSuccessAt: '2026-08-12T03:00:00Z', githubTokenSet: true, stale: false,
   rateLimit: { limit: 30, remaining: 27, resetAt: '2026-08-12T07:10:00Z' },
   items: [
     { id: 1, name: 'superpowers-agent-skills-development-framework', fullName: 'example/superpowers-agent-skills-development-framework', description: '一套面向复杂软件研发流程的 Agent Skills 框架，覆盖设计、实现、评审与验证。', url: 'https://github.com/example/superpowers', homepage: '', owner: 'example', ownerAvatar: 'https://github.com/identicons/example.png', category: 'project', language: 'TypeScript', license: 'MIT', topics: ['ai', 'agent-skills', 'developer-tools'], stars: 128400, forks: 9800, openIssues: 128, score: 96, signals: ['开源协议清晰', '社区讨论开放', '近 30 天活跃', '社区关注度高'], createdAt: '2025-01-01T00:00:00Z', updatedAt: '2026-08-12T00:00:00Z', pushedAt: '2026-08-12T00:00:00Z' },
@@ -41,7 +41,7 @@ test('frontier discovery is responsive without overflow', async ({ page }, testI
   await expect(page.getByRole('heading', { level: 2, name: '前沿项目' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'superpowers-agent-skills-development-framework' })).toBeVisible()
   await expect(page.getByText('开源协议清晰').first()).toBeVisible()
-  await expect(page.getByText('本次 GitHub 搜索后剩余额度 27/30')).toBeVisible()
+  await expect(page.getByText(/每天 11:00 自动更新/)).toBeVisible()
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
   expect(overflow).toBe(false)
   await page.screenshot({ path: `../.runtime/screenshots/frontier-${testInfo.project.name}.png`, fullPage: true })

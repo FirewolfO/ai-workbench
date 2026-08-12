@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -15,6 +16,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ai-workbench/internal/model"
+	"ai-workbench/internal/store"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var (
@@ -45,6 +52,7 @@ type Result struct {
 	GitHubTokenSet bool         `json:"githubTokenSet"`
 	RateLimit      RateLimit    `json:"rateLimit"`
 	Stale          bool         `json:"stale"`
+	LastSuccessAt  *time.Time   `json:"lastSuccessAt,omitempty"`
 }
 
 type Repository struct {
@@ -82,26 +90,147 @@ type cacheEntry struct {
 }
 
 type Service struct {
-	baseURL string
-	token   string
-	http    *http.Client
-	now     func() time.Time
-	mu      sync.RWMutex
-	cache   map[string]cacheEntry
+	database  *store.Store
+	baseURL   string
+	token     string
+	http      *http.Client
+	now       func() time.Time
+	mu        sync.RWMutex
+	cache     map[string]cacheEntry
+	schedule  DailySchedule
+	refreshMu sync.Mutex
 }
 
-func New(baseURL, token string) *Service {
+type DailySchedule struct {
+	Hour     int
+	Location *time.Location
+}
+
+func New(database *store.Store, baseURL, token string, schedules ...DailySchedule) *Service {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	return &Service{
-		baseURL: baseURL,
-		token:   strings.TrimSpace(token),
-		http:    &http.Client{Timeout: 20 * time.Second},
-		now:     time.Now,
-		cache:   make(map[string]cacheEntry),
+	schedule := DailySchedule{Hour: 11, Location: time.FixedZone("Asia/Shanghai", 8*60*60)}
+	if len(schedules) > 0 {
+		schedule = schedules[0]
+		if schedule.Hour < 0 || schedule.Hour > 23 {
+			schedule.Hour = 11
+		}
+		if schedule.Location == nil {
+			schedule.Location = time.FixedZone("Asia/Shanghai", 8*60*60)
+		}
 	}
+	return &Service{
+		database: database,
+		baseURL:  baseURL,
+		token:    strings.TrimSpace(token),
+		http:     &http.Client{Timeout: 20 * time.Second},
+		now:      time.Now,
+		cache:    make(map[string]cacheEntry),
+		schedule: schedule,
+	}
+}
+
+func (s *Service) Start(ctx context.Context) {
+	if s.database == nil {
+		return
+	}
+	go s.startSchedule(ctx)
+}
+
+func (s *Service) startSchedule(ctx context.Context) {
+	for {
+		if s.refreshDue(s.now()) {
+			if state, err := s.Refresh(ctx); err != nil {
+				log.Printf("frontier project refresh failed: %v", err)
+			} else {
+				log.Printf("frontier project refresh completed: %d items; next run at %s", state.ItemsFetched, s.nextCheck(s.now()).Format(time.RFC3339))
+			}
+		}
+		timer := time.NewTimer(time.Until(s.nextCheck(s.now())))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *Service) refreshDue(now time.Time) bool {
+	local := now.In(s.schedule.Location)
+	scheduled := time.Date(local.Year(), local.Month(), local.Day(), s.schedule.Hour, 0, 0, 0, s.schedule.Location)
+	if local.Before(scheduled) {
+		return false
+	}
+	var state model.SyncState
+	if err := s.database.DB.First(&state, "key = ?", "frontier").Error; err != nil {
+		return true
+	}
+	return state.LastSuccessAt == nil || state.LastSuccessAt.Before(scheduled.UTC())
+}
+
+func (s *Service) nextCheck(now time.Time) time.Time {
+	if s.refreshDue(now) {
+		return now.Add(15 * time.Minute)
+	}
+	local := now.In(s.schedule.Location)
+	next := time.Date(local.Year(), local.Month(), local.Day(), s.schedule.Hour, 0, 0, 0, s.schedule.Location)
+	if !next.After(local) {
+		next = next.AddDate(0, 0, 1)
+	}
+	return next
+}
+
+func (s *Service) Refresh(ctx context.Context) (*model.SyncState, error) {
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	now := s.now().UTC()
+	state := model.SyncState{Key: "frontier"}
+	if err := s.database.DB.FirstOrCreate(&state, model.SyncState{Key: "frontier"}).Error; err != nil {
+		return nil, err
+	}
+	state.LastAttemptAt = &now
+	if err := s.database.DB.Save(&state).Error; err != nil {
+		return nil, err
+	}
+
+	results := make(map[string]*Result, 3)
+	count := 0
+	for _, category := range []string{"project", "skill", "plugin"} {
+		query, _ := normalizeQuery(Query{Category: category})
+		result, err := s.search(ctx, query)
+		if err != nil {
+			state.LastError = err.Error()
+			state.ItemsFetched = 0
+			_ = s.database.DB.Save(&state).Error
+			return &state, err
+		}
+		results[category] = result
+		count += len(result.Items)
+	}
+
+	err := s.database.DB.Transaction(func(transaction *gorm.DB) error {
+		for category, result := range results {
+			payload, err := json.Marshal(result)
+			if err != nil {
+				return err
+			}
+			snapshot := model.FrontierSnapshot{Category: category, Payload: string(payload), GeneratedAt: result.GeneratedAt}
+			if err := transaction.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "category"}}, DoUpdates: clause.AssignmentColumns([]string{"payload", "generated_at", "updated_at"})}).Create(&snapshot).Error; err != nil {
+				return err
+			}
+		}
+		state.LastSuccessAt = &now
+		state.LastError = ""
+		state.ItemsFetched = count
+		return transaction.Save(&state).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &state, nil
 }
 
 func (s *Service) Discover(ctx context.Context, input Query) (*Result, error) {
@@ -110,6 +239,11 @@ func (s *Service) Discover(ctx context.Context, input Query) (*Result, error) {
 		return nil, err
 	}
 	key := query.cacheKey()
+	if query.isDefault() {
+		if snapshot, ok := s.loadSnapshot(query.category); ok {
+			return &snapshot, nil
+		}
+	}
 	if cached, ok := s.cached(key, false); ok {
 		return &cached, nil
 	}
@@ -122,10 +256,44 @@ func (s *Service) Discover(ctx context.Context, input Query) (*Result, error) {
 		}
 		return nil, err
 	}
+	s.attachLastSuccess(result)
 	s.mu.Lock()
 	s.cache[key] = cacheEntry{result: *result, expiresAt: s.now().Add(cacheTTL)}
 	s.mu.Unlock()
 	return result, nil
+}
+
+func (s *Service) attachLastSuccess(result *Result) {
+	if s.database == nil {
+		return
+	}
+	var state model.SyncState
+	if err := s.database.DB.First(&state, "key = ?", "frontier").Error; err == nil {
+		result.LastSuccessAt = state.LastSuccessAt
+	}
+}
+
+func (q normalizedQuery) isDefault() bool {
+	return q.search == "" && q.language == "" && q.period == "90d" && q.sort == "recommended"
+}
+
+func (s *Service) loadSnapshot(category string) (Result, bool) {
+	if s.database == nil {
+		return Result{}, false
+	}
+	var snapshot model.FrontierSnapshot
+	if err := s.database.DB.First(&snapshot, "category = ?", category).Error; err != nil {
+		return Result{}, false
+	}
+	var result Result
+	if err := json.Unmarshal([]byte(snapshot.Payload), &result); err != nil {
+		return Result{}, false
+	}
+	result.GeneratedAt = snapshot.GeneratedAt
+	result.GitHubTokenSet = s.token != ""
+	result.RateLimit = RateLimit{}
+	s.attachLastSuccess(&result)
+	return result, true
 }
 
 type normalizedQuery struct {

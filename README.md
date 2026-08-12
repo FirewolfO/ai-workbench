@@ -44,6 +44,14 @@ npm --prefix frontend install
 - AI Workbench API：`http://localhost:8087`
 - 统一 Admin UI：`http://localhost:5178/ai-workbench/chat`
 
+需要服务在退出终端后继续运行时，安装用户级常驻服务：
+
+```bash
+./install-user-service.sh
+```
+
+安装后 API 与独立前端会随用户服务管理器自动启动，异常退出时自动重启。查看状态和日志可使用 `systemctl --user status ai-workbench-api ai-workbench-ui` 与 `journalctl --user -u ai-workbench-api -u ai-workbench-ui`。
+
 默认配置位于 `backend/.env.example` 和 `frontend/.env.example`。工作区默认使用 `http://10.251.237.216:5177/oauth/authorize` 作为 People 登录入口；仅在浏览器与 People 都运行于同一台机器时，才应将 `AI_WORKBENCH_PEOPLE_AUTHORIZE_URL` 覆盖为 `http://localhost:5177/oauth/authorize`。还可在 `backend/.env` 覆盖模型密钥加密主密钥、OAuth Client Secret、允许来源和数据库路径。`AI_WORKBENCH_ENCRYPTION_KEY` 轮换前必须迁移已有模型密钥，否则旧密文将无法解密。
 
 ## 每日 AI 情报
@@ -58,7 +66,9 @@ npm --prefix frontend install
 
 “前沿项目”通过 GitHub Repository Search 实时检索 AI 项目、Skill 和插件，支持关键词、语言、活跃时间与排序筛选。默认推荐分综合 Star、Fork、最近推送和开源协议、主题、主页、讨论区等成熟度信号，不以单一 Star 数代替项目质量。
 
-未配置 `AI_WORKBENCH_GITHUB_TOKEN` 时仍可使用 GitHub 公开搜索额度；生产环境建议配置服务端 Token 以获得更稳定的额度。Token 只由后端使用，不会返回浏览器或写入日志。相同筛选结果会缓存 5 分钟，上游短暂异常时可在一小时内回退到缓存结果。
+默认榜单每天按 `AI_WORKBENCH_FRONTIER_TIMEZONE`（默认 `Asia/Shanghai`）在 `AI_WORKBENCH_FRONTIER_REFRESH_HOUR`（默认 11 点）自动拉取 AI 项目、Skill 和插件三类结果并写入 SQLite。服务在 11 点后启动且当天尚未成功时会立即补拉，失败时保留上一版完整快照并每 15 分钟重试。自定义关键词或筛选条件仍会实时查询 GitHub。
+
+未配置 `AI_WORKBENCH_GITHUB_TOKEN` 时仍可使用 GitHub 公开搜索额度；生产环境建议配置服务端 Token 以获得更稳定的额度。Token 只由后端使用，不会返回浏览器或写入日志。相同实时筛选结果会缓存 5 分钟，上游短暂异常时可在一小时内回退到缓存结果。
 
 ## 模型连接
 

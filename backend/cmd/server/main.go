@@ -36,7 +36,8 @@ func main() {
 		Hour: cfg.NewsRefreshHour, Location: cfg.NewsRefreshTimezone, Lookback: cfg.NewsLookback,
 	})
 	contentService.Start(context.Background())
-	frontierService := frontier.New(cfg.GitHubAPIBaseURL, cfg.GitHubToken)
+	frontierService := frontier.New(database, cfg.GitHubAPIBaseURL, cfg.GitHubToken, frontier.DailySchedule{Hour: cfg.FrontierRefreshHour, Location: cfg.FrontierTimezone})
+	frontierService.Start(context.Background())
 	server := api.New(cfg.Address, cfg.AllowedOrigins, identities, service, contentService, frontierService)
 	log.Printf("AI Workbench 服务监听于 %s", cfg.Address)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

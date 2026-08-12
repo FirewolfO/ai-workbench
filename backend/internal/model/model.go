@@ -145,3 +145,11 @@ type SyncState struct {
 	ItemsFetched  int        `gorm:"not null;default:0" json:"itemsFetched"`
 	UpdatedAt     time.Time  `json:"updatedAt"`
 }
+
+type FrontierSnapshot struct {
+	Category    string    `gorm:"primaryKey;size:20"`
+	Payload     string    `gorm:"type:text;not null"`
+	GeneratedAt time.Time `gorm:"index;not null"`
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}

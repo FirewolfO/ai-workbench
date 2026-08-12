@@ -6,10 +6,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"ai-workbench/internal/model"
+	"ai-workbench/internal/store"
 )
 
 func TestBuildSearchQuery(t *testing.T) {
@@ -57,7 +61,7 @@ func TestDiscoverMapsRanksAndCachesRepositories(t *testing.T) {
 	}))
 	defer server.Close()
 
-	service := New(server.URL, "test-token")
+	service := New(nil, server.URL, "test-token")
 	service.now = func() time.Time { return time.Date(2026, 8, 12, 8, 0, 0, 0, time.UTC) }
 	first, err := service.Discover(context.Background(), Query{})
 	if err != nil {
@@ -78,7 +82,7 @@ func TestDiscoverReportsRateLimit(t *testing.T) {
 		writer.WriteHeader(http.StatusForbidden)
 	}))
 	defer server.Close()
-	_, err := New(server.URL, "").Discover(context.Background(), Query{})
+	_, err := New(nil, server.URL, "").Discover(context.Background(), Query{})
 	if !strings.Contains(err.Error(), ErrRateLimited.Error()) {
 		t.Fatalf("expected rate limit error, got %v", err)
 	}
@@ -96,7 +100,7 @@ func TestDiscoverFallsBackToRecentCache(t *testing.T) {
 	defer server.Close()
 
 	now := time.Date(2026, 8, 12, 8, 0, 0, 0, time.UTC)
-	service := New(server.URL, "")
+	service := New(nil, server.URL, "")
 	service.now = func() time.Time { return now }
 	if _, err := service.Discover(context.Background(), Query{}); err != nil {
 		t.Fatal(err)
@@ -114,8 +118,85 @@ func TestDiscoverTreatsNonRateLimitForbiddenAsUnavailable(t *testing.T) {
 		writer.WriteHeader(http.StatusForbidden)
 	}))
 	defer server.Close()
-	_, err := New(server.URL, "bad-token").Discover(context.Background(), Query{})
+	_, err := New(nil, server.URL, "bad-token").Discover(context.Background(), Query{})
 	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("expected unavailable error, got %v", err)
 	}
+}
+
+func TestDailySchedule(t *testing.T) {
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	database := testStore(t)
+	service := New(database, "", "", DailySchedule{Hour: 11, Location: location})
+
+	before := time.Date(2026, 8, 12, 10, 59, 0, 0, location)
+	if service.refreshDue(before) {
+		t.Fatal("frontier should not refresh before 11:00")
+	}
+	if got := service.nextCheck(before); !got.Equal(time.Date(2026, 8, 12, 11, 0, 0, 0, location)) {
+		t.Fatalf("next check = %v", got)
+	}
+
+	after := time.Date(2026, 8, 12, 11, 1, 0, 0, location)
+	if !service.refreshDue(after) || !service.nextCheck(after).Equal(after.Add(15*time.Minute)) {
+		t.Fatal("frontier should refresh and retry after 11:00 when today has not succeeded")
+	}
+	success := time.Date(2026, 8, 12, 11, 0, 30, 0, location).UTC()
+	if err := database.DB.Create(&model.SyncState{Key: "frontier", LastSuccessAt: &success}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if service.refreshDue(after) {
+		t.Fatal("frontier should not refresh twice after today's success")
+	}
+	if got := service.nextCheck(after); !got.Equal(time.Date(2026, 8, 13, 11, 0, 0, 0, location)) {
+		t.Fatalf("next daily check = %v", got)
+	}
+}
+
+func TestRefreshPersistsAllDefaultCategories(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		category := "project"
+		query := request.URL.Query().Get("q")
+		if strings.Contains(query, "AI skill") {
+			category = "skill"
+		} else if strings.Contains(query, "AI plugin") {
+			category = "plugin"
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"total_count": 1, "items": []map[string]any{{"id": calls.Load(), "name": category, "full_name": "acme/" + category, "html_url": "https://github.com/acme/" + category}}})
+	}))
+	defer server.Close()
+
+	database := testStore(t)
+	now := time.Date(2026, 8, 12, 3, 1, 0, 0, time.UTC)
+	service := New(database, server.URL, "")
+	service.now = func() time.Time { return now }
+	state, err := service.Refresh(context.Background())
+	if err != nil || state.LastSuccessAt == nil || state.ItemsFetched != 3 || calls.Load() != 3 {
+		t.Fatalf("unexpected refresh: state=%#v calls=%d err=%v", state, calls.Load(), err)
+	}
+	for _, category := range []string{"project", "skill", "plugin"} {
+		result, err := service.Discover(context.Background(), Query{Category: category})
+		if err != nil || len(result.Items) != 1 || result.Items[0].Name != category || result.LastSuccessAt == nil {
+			t.Fatalf("unexpected %s snapshot: %#v, %v", category, result, err)
+		}
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("default discovery should read snapshots, calls=%d", calls.Load())
+	}
+	filtered, err := service.Discover(context.Background(), Query{Search: "agent"})
+	if err != nil || filtered.LastSuccessAt == nil || calls.Load() != 4 {
+		t.Fatalf("filtered discovery should include the daily sync time: %#v, calls=%d, err=%v", filtered, calls.Load(), err)
+	}
+}
+
+func testStore(t *testing.T) *store.Store {
+	t.Helper()
+	database, err := store.Open(filepath.Join(t.TempDir(), "frontier.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	return database
 }

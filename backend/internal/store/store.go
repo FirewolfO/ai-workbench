@@ -20,6 +20,7 @@ func Open(dsn string) (*Store, error) {
 	if err := db.AutoMigrate(
 		&model.Provider{}, &model.Prompt{}, &model.Conversation{}, &model.Message{}, &model.Session{}, &model.OAuthState{},
 		&model.NewsArticle{}, &model.NewsFavorite{}, &model.TrackedPerson{}, &model.SocialPost{}, &model.SocialPostFavorite{}, &model.SyncState{},
+		&model.FrontierSnapshot{},
 	); err != nil {
 		return nil, err
 	}

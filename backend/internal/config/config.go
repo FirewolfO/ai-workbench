@@ -22,6 +22,8 @@ type Config struct {
 	XBearerToken         string
 	GitHubAPIBaseURL     string
 	GitHubToken          string
+	FrontierRefreshHour  int
+	FrontierTimezone     *time.Location
 	ContentRefreshPeriod time.Duration
 	NewsRefreshHour      int
 	NewsRefreshTimezone  *time.Location
@@ -44,6 +46,8 @@ func Load() Config {
 		XBearerToken:         strings.TrimSpace(os.Getenv("AI_WORKBENCH_X_BEARER_TOKEN")),
 		GitHubAPIBaseURL:     strings.TrimRight(env("AI_WORKBENCH_GITHUB_API_BASE_URL", "https://api.github.com"), "/"),
 		GitHubToken:          strings.TrimSpace(os.Getenv("AI_WORKBENCH_GITHUB_TOKEN")),
+		FrontierRefreshHour:  integer("AI_WORKBENCH_FRONTIER_REFRESH_HOUR", 11, 0, 23),
+		FrontierTimezone:     location("AI_WORKBENCH_FRONTIER_TIMEZONE", "Asia/Shanghai"),
 		ContentRefreshPeriod: hours("AI_WORKBENCH_CONTENT_REFRESH_HOURS", 24),
 		NewsRefreshHour:      integer("AI_WORKBENCH_NEWS_REFRESH_HOUR", 10, 0, 23),
 		NewsRefreshTimezone:  location("AI_WORKBENCH_NEWS_TIMEZONE", "Asia/Shanghai"),

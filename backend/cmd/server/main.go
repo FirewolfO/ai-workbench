@@ -31,7 +31,9 @@ func main() {
 	defer database.Close()
 	identities := identity.New(database, cfg.PermissionAPIBaseURL, cfg.PeopleAPIBaseURL, cfg.PeopleAuthorizeURL, cfg.PeopleClientID, cfg.PeopleClientSecret, cfg.OAuthRedirectURIs)
 	service := workbench.New(database, vault, llm.New())
-	contentService := content.New(database, content.DefaultSources, cfg.XAPIBaseURL, cfg.XBearerToken, cfg.ContentRefreshPeriod)
+	contentService := content.New(database, content.DefaultSources, cfg.XAPIBaseURL, cfg.XBearerToken, cfg.ContentRefreshPeriod, content.DailySchedule{
+		Hour: cfg.NewsRefreshHour, Location: cfg.NewsRefreshTimezone, Lookback: cfg.NewsLookback,
+	})
 	contentService.Start(context.Background())
 	server := api.New(cfg.Address, cfg.AllowedOrigins, identities, service, contentService)
 	log.Printf("AI Workbench 服务监听于 %s", cfg.Address)

@@ -47,7 +47,7 @@ npm --prefix frontend install
 
 ## 每日 AI 情报
 
-后端每小时检查同步状态；距离上次成功同步达到 `AI_WORKBENCH_CONTENT_REFRESH_HOURS`（默认 24 小时）后自动补拉，也支持页面手动同步。
+后端每天按 `AI_WORKBENCH_NEWS_TIMEZONE`（默认 `Asia/Shanghai`）在 `AI_WORKBENCH_NEWS_REFRESH_HOUR`（默认上午 10 点）自动拉取一次最近 `AI_WORKBENCH_NEWS_LOOKBACK_HOURS`（默认 24 小时）内发布的新热点；当天失败时每 15 分钟重试，服务在 10 点后启动且当天尚未成功时会立即补拉。页面仍支持手动同步。人物动态继续按 `AI_WORKBENCH_CONTENT_REFRESH_HOURS`（默认 24 小时）检查更新。
 
 - AI 热点使用各机构公开订阅源：[OpenAI News RSS](https://openai.com/news/rss.xml)、[Google AI RSS](https://blog.google/technology/ai/rss/)、[Hugging Face Blog Feed](https://huggingface.co/blog/feed.xml) 与 [arXiv cs.AI RSS](https://export.arxiv.org/rss/cs.AI)。文章按原文 URL 去重，收藏按 People 用户隔离；页面会使用当前用户启用的模型批量生成简短中文概要并缓存，未配置模型时保留来源原始摘要。
 - 大佬动态默认关注 Codex 产品负责人 Tibor Blaho（`@btibor91`），并允许每位用户维护自己的 X 关注列表。接入遵循 X API v2 的 [User Lookup](https://docs.x.com/x-api/users/lookup/introduction) 与 [Get Posts](https://docs.x.com/x-api/users/get-posts) 接口。

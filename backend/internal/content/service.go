@@ -37,6 +37,12 @@ type Source struct {
 	URL  string `json:"-"`
 }
 
+type DailySchedule struct {
+	Hour     int
+	Location *time.Location
+	Lookback time.Duration
+}
+
 var DefaultSources = []Source{
 	{Code: "openai", Name: "OpenAI News", URL: "https://openai.com/news/rss.xml"},
 	{Code: "google-ai", Name: "Google AI", URL: "https://blog.google/technology/ai/rss/"},
@@ -77,26 +83,41 @@ type Service struct {
 	x             *xClient
 	sources       []Source
 	refreshPeriod time.Duration
+	newsSchedule  DailySchedule
 	newsMu        sync.Mutex
 	peopleMu      sync.Mutex
 }
 
-func New(database *store.Store, sources []Source, xBaseURL, xBearerToken string, refreshPeriod time.Duration) *Service {
+func New(database *store.Store, sources []Source, xBaseURL, xBearerToken string, refreshPeriod time.Duration, schedules ...DailySchedule) *Service {
 	if len(sources) == 0 {
 		sources = DefaultSources
 	}
 	if refreshPeriod < time.Hour {
 		refreshPeriod = 24 * time.Hour
 	}
+	schedule := DailySchedule{Hour: 10, Location: time.FixedZone("Asia/Shanghai", 8*60*60), Lookback: 24 * time.Hour}
+	if len(schedules) > 0 {
+		schedule = schedules[0]
+		if schedule.Hour < 0 || schedule.Hour > 23 {
+			schedule.Hour = 10
+		}
+		if schedule.Location == nil {
+			schedule.Location = time.FixedZone("Asia/Shanghai", 8*60*60)
+		}
+		if schedule.Lookback < time.Hour {
+			schedule.Lookback = 24 * time.Hour
+		}
+	}
 	return &Service{
 		database: database, feeds: newFeedClient(), x: newXClient(xBaseURL, xBearerToken),
-		sources: append([]Source(nil), sources...), refreshPeriod: refreshPeriod,
+		sources: append([]Source(nil), sources...), refreshPeriod: refreshPeriod, newsSchedule: schedule,
 	}
 }
 
 func (s *Service) Start(ctx context.Context) {
+	go s.startNewsSchedule(ctx)
 	go func() {
-		s.refreshDue(ctx)
+		s.refreshPeopleDue(ctx)
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
 		for {
@@ -104,18 +125,33 @@ func (s *Service) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.refreshDue(ctx)
+				s.refreshPeopleDue(ctx)
 			}
 		}
 	}()
 }
 
-func (s *Service) refreshDue(ctx context.Context) {
-	if s.isDue("news", time.Now().UTC()) {
-		if _, err := s.RefreshNews(ctx); err != nil {
-			log.Printf("AI news refresh failed: %v", err)
+func (s *Service) startNewsSchedule(ctx context.Context) {
+	for {
+		now := time.Now()
+		if s.newsDue(now) {
+			if state, err := s.RefreshNews(ctx); err != nil {
+				log.Printf("AI news refresh failed: %v", err)
+			} else {
+				log.Printf("AI news refresh completed: %d recent items; next run at %s", state.ItemsFetched, s.nextNewsCheck(time.Now()).Format(time.RFC3339))
+			}
+		}
+		timer := time.NewTimer(time.Until(s.nextNewsCheck(time.Now())))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
 		}
 	}
+}
+
+func (s *Service) refreshPeopleDue(ctx context.Context) {
 	if !s.x.configured() {
 		return
 	}
@@ -132,10 +168,30 @@ func (s *Service) refreshDue(ctx context.Context) {
 	}
 }
 
-func (s *Service) isDue(key string, now time.Time) bool {
+func (s *Service) newsDue(now time.Time) bool {
+	local := now.In(s.newsSchedule.Location)
+	scheduled := time.Date(local.Year(), local.Month(), local.Day(), s.newsSchedule.Hour, 0, 0, 0, s.newsSchedule.Location)
+	if local.Before(scheduled) {
+		return false
+	}
 	var state model.SyncState
-	err := s.database.DB.First(&state, "key = ?", key).Error
-	return errors.Is(err, gorm.ErrRecordNotFound) || err == nil && (state.LastSuccessAt == nil || state.LastSuccessAt.Before(now.Add(-s.refreshPeriod)))
+	err := s.database.DB.First(&state, "key = ?", "news").Error
+	if err != nil {
+		return true
+	}
+	return state.LastSuccessAt == nil || state.LastSuccessAt.Before(scheduled.UTC())
+}
+
+func (s *Service) nextNewsCheck(now time.Time) time.Time {
+	if s.newsDue(now) {
+		return now.Add(15 * time.Minute)
+	}
+	local := now.In(s.newsSchedule.Location)
+	next := time.Date(local.Year(), local.Month(), local.Day(), s.newsSchedule.Hour, 0, 0, 0, s.newsSchedule.Location)
+	if !next.After(local) {
+		next = next.AddDate(0, 0, 1)
+	}
+	return next
 }
 
 func (s *Service) RefreshNews(ctx context.Context) (*model.SyncState, error) {
@@ -151,6 +207,8 @@ func (s *Service) RefreshNews(ctx context.Context) (*model.SyncState, error) {
 		return nil, err
 	}
 	count := 0
+	cutoff := now.Add(-s.newsSchedule.Lookback)
+	successfulSources := 0
 	var failures []string
 	for _, source := range s.sources {
 		items, err := s.feeds.fetch(ctx, source)
@@ -158,26 +216,34 @@ func (s *Service) RefreshNews(ctx context.Context) (*model.SyncState, error) {
 			failures = append(failures, source.Name+": "+err.Error())
 			continue
 		}
+		sourceSaved := true
 		for _, item := range items {
+			if item.PublishedAt.Before(cutoff) || item.PublishedAt.After(now) {
+				continue
+			}
 			if err := s.database.DB.Clauses(clause.OnConflict{
 				Columns:   []clause.Column{{Name: "url"}},
 				DoUpdates: clause.AssignmentColumns([]string{"source_code", "source_name", "external_id", "title", "summary", "author", "published_at", "fetched_at", "updated_at"}),
 			}).Create(&item).Error; err != nil {
 				failures = append(failures, source.Name+": save failed")
+				sourceSaved = false
 				continue
 			}
 			count++
 		}
+		if sourceSaved {
+			successfulSources++
+		}
 	}
 	state.ItemsFetched = count
 	state.LastError = strings.Join(failures, "; ")
-	if count > 0 {
+	if successfulSources > 0 {
 		state.LastSuccessAt = &now
 	}
 	if err := s.database.DB.Save(&state).Error; err != nil {
 		return nil, err
 	}
-	if count == 0 {
+	if successfulSources == 0 {
 		return &state, fmt.Errorf("%w: %s", ErrUpstream, state.LastError)
 	}
 	return &state, nil

@@ -21,6 +21,9 @@ type Config struct {
 	XAPIBaseURL          string
 	XBearerToken         string
 	ContentRefreshPeriod time.Duration
+	NewsRefreshHour      int
+	NewsRefreshTimezone  *time.Location
+	NewsLookback         time.Duration
 }
 
 func Load() Config {
@@ -38,7 +41,26 @@ func Load() Config {
 		XAPIBaseURL:          strings.TrimRight(env("AI_WORKBENCH_X_API_BASE_URL", "https://api.x.com/2"), "/"),
 		XBearerToken:         strings.TrimSpace(os.Getenv("AI_WORKBENCH_X_BEARER_TOKEN")),
 		ContentRefreshPeriod: hours("AI_WORKBENCH_CONTENT_REFRESH_HOURS", 24),
+		NewsRefreshHour:      integer("AI_WORKBENCH_NEWS_REFRESH_HOUR", 10, 0, 23),
+		NewsRefreshTimezone:  location("AI_WORKBENCH_NEWS_TIMEZONE", "Asia/Shanghai"),
+		NewsLookback:         hours("AI_WORKBENCH_NEWS_LOOKBACK_HOURS", 24),
 	}
+}
+
+func integer(key string, fallback, minimum, maximum int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
+	if err != nil || value < minimum || value > maximum {
+		return fallback
+	}
+	return value
+}
+
+func location(key, fallback string) *time.Location {
+	value, err := time.LoadLocation(env(key, fallback))
+	if err != nil {
+		value, _ = time.LoadLocation(fallback)
+	}
+	return value
 }
 
 func hours(key string, fallback int) time.Duration {

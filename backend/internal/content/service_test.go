@@ -10,13 +10,15 @@ import (
 	"time"
 
 	"ai-workbench/internal/identity"
+	"ai-workbench/internal/model"
 	"ai-workbench/internal/store"
 )
 
 func TestRefreshNewsListAndFavorite(t *testing.T) {
+	now := time.Now().UTC()
 	feed := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/rss+xml")
-		_, _ = fmt.Fprint(writer, `<?xml version="1.0"?><rss><channel><item><title>New &amp; useful model</title><link>https://example.com/model</link><description><![CDATA[<p>A <strong>useful</strong> release.</p>]]></description><pubDate>Mon, 11 Aug 2025 10:00:00 +0000</pubDate><author>Research team</author></item></channel></rss>`)
+		_, _ = fmt.Fprintf(writer, `<?xml version="1.0"?><rss><channel><item><title>New &amp; useful model</title><link>https://example.com/model</link><description><![CDATA[<p>A <strong>useful</strong> release.</p>]]></description><pubDate>%s</pubDate><author>Research team</author></item><item><title>Old model</title><link>https://example.com/old</link><pubDate>%s</pubDate></item></channel></rss>`, now.Add(-time.Hour).Format(time.RFC1123Z), now.Add(-25*time.Hour).Format(time.RFC1123Z))
 	}))
 	defer feed.Close()
 	database := testStore(t)
@@ -39,6 +41,52 @@ func TestRefreshNewsListAndFavorite(t *testing.T) {
 	favorites, err := service.News(actor, "", "", true)
 	if err != nil || len(favorites.Items) != 1 || !favorites.Items[0].Favorite {
 		t.Fatalf("unexpected favorites: %#v, %v", favorites, err)
+	}
+}
+
+func TestDailyNewsSchedule(t *testing.T) {
+	location := time.FixedZone("Asia/Shanghai", 8*60*60)
+	database := testStore(t)
+	service := New(database, nil, "", "", 24*time.Hour, DailySchedule{Hour: 10, Location: location, Lookback: 24 * time.Hour})
+
+	before := time.Date(2026, 8, 12, 9, 59, 0, 0, location)
+	if service.newsDue(before) {
+		t.Fatal("news should not refresh before the daily schedule")
+	}
+	if got := service.nextNewsCheck(before); !got.Equal(time.Date(2026, 8, 12, 10, 0, 0, 0, location)) {
+		t.Fatalf("next check = %v", got)
+	}
+
+	after := time.Date(2026, 8, 12, 10, 1, 0, 0, location)
+	if !service.newsDue(after) {
+		t.Fatal("news should refresh after the schedule when today has not succeeded")
+	}
+	if got := service.nextNewsCheck(after); !got.Equal(after.Add(15 * time.Minute)) {
+		t.Fatalf("failed refresh retry = %v", got)
+	}
+
+	success := time.Date(2026, 8, 12, 10, 0, 30, 0, location).UTC()
+	if err := database.DB.Create(&model.SyncState{Key: "news", LastSuccessAt: &success}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if service.newsDue(after) {
+		t.Fatal("news should not refresh twice after today's success")
+	}
+	if got := service.nextNewsCheck(after); !got.Equal(time.Date(2026, 8, 13, 10, 0, 0, 0, location)) {
+		t.Fatalf("next daily check = %v", got)
+	}
+}
+
+func TestRefreshNewsSucceedsWhenNoRecentArticlesExist(t *testing.T) {
+	feed := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/rss+xml")
+		_, _ = fmt.Fprintf(writer, `<?xml version="1.0"?><rss><channel><item><title>Old model</title><link>https://example.com/old</link><pubDate>%s</pubDate></item></channel></rss>`, time.Now().UTC().Add(-25*time.Hour).Format(time.RFC1123Z))
+	}))
+	defer feed.Close()
+	service := New(testStore(t), []Source{{Code: "test", Name: "Test Feed", URL: feed.URL}}, "", "", 24*time.Hour)
+	state, err := service.RefreshNews(context.Background())
+	if err != nil || state.ItemsFetched != 0 || state.LastSuccessAt == nil {
+		t.Fatalf("empty recent window should be a successful refresh: %#v, %v", state, err)
 	}
 }
 

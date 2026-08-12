@@ -20,6 +20,8 @@ type Config struct {
 	OAuthRedirectURIs    []string
 	XAPIBaseURL          string
 	XBearerToken         string
+	GitHubAPIBaseURL     string
+	GitHubToken          string
 	ContentRefreshPeriod time.Duration
 	NewsRefreshHour      int
 	NewsRefreshTimezone  *time.Location
@@ -40,6 +42,8 @@ func Load() Config {
 		OAuthRedirectURIs:    split(env("AI_WORKBENCH_OAUTH_REDIRECT_URIS", "http://localhost:5181/oauth/callback,http://127.0.0.1:5181/oauth/callback,http://10.251.237.216:5181/oauth/callback")),
 		XAPIBaseURL:          strings.TrimRight(env("AI_WORKBENCH_X_API_BASE_URL", "https://api.x.com/2"), "/"),
 		XBearerToken:         strings.TrimSpace(os.Getenv("AI_WORKBENCH_X_BEARER_TOKEN")),
+		GitHubAPIBaseURL:     strings.TrimRight(env("AI_WORKBENCH_GITHUB_API_BASE_URL", "https://api.github.com"), "/"),
+		GitHubToken:          strings.TrimSpace(os.Getenv("AI_WORKBENCH_GITHUB_TOKEN")),
 		ContentRefreshPeriod: hours("AI_WORKBENCH_CONTENT_REFRESH_HOURS", 24),
 		NewsRefreshHour:      integer("AI_WORKBENCH_NEWS_REFRESH_HOUR", 10, 0, 23),
 		NewsRefreshTimezone:  location("AI_WORKBENCH_NEWS_TIMEZONE", "Asia/Shanghai"),

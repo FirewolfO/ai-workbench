@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"ai-workbench/internal/content"
+	"ai-workbench/internal/frontier"
 	"ai-workbench/internal/identity"
 	"ai-workbench/internal/workbench"
 )
@@ -27,12 +28,13 @@ type Server struct {
 	auth           authenticator
 	workbench      *workbench.Service
 	content        *content.Service
+	frontier       *frontier.Service
 }
 
 type actorContextKey struct{}
 
-func New(address string, allowedOrigins []string, auth authenticator, service *workbench.Service, contentService *content.Service) *http.Server {
-	server := &Server{address: address, allowedOrigins: map[string]bool{}, auth: auth, workbench: service, content: contentService}
+func New(address string, allowedOrigins []string, auth authenticator, service *workbench.Service, contentService *content.Service, frontierService *frontier.Service) *http.Server {
+	server := &Server{address: address, allowedOrigins: map[string]bool{}, auth: auth, workbench: service, content: contentService, frontier: frontierService}
 	for _, origin := range allowedOrigins {
 		server.allowedOrigins[origin] = true
 	}
@@ -70,6 +72,7 @@ func New(address string, allowedOrigins []string, auth authenticator, service *w
 	mux.Handle("POST /api/v1/people/refresh", server.requireAuth(http.HandlerFunc(server.refreshPeople)))
 	mux.Handle("GET /api/v1/people/posts", server.requireAuth(http.HandlerFunc(server.socialPosts)))
 	mux.Handle("PUT /api/v1/people/posts/{id}/favorite", server.requireAuth(http.HandlerFunc(server.favoritePost)))
+	mux.Handle("GET /api/v1/frontier", server.requireAuth(http.HandlerFunc(server.frontierProjects)))
 	return &http.Server{Addr: address, Handler: server.middleware(mux), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 120 * time.Second}
 }
 
@@ -345,6 +348,14 @@ func (s *Server) favoritePost(writer http.ResponseWriter, request *http.Request)
 	respond(writer, map[string]bool{"favorite": input.Favorite}, err, http.StatusOK)
 }
 
+func (s *Server) frontierProjects(writer http.ResponseWriter, request *http.Request) {
+	result, err := s.frontier.Discover(request.Context(), frontier.Query{
+		Search: request.URL.Query().Get("search"), Category: request.URL.Query().Get("category"),
+		Language: request.URL.Query().Get("language"), Period: request.URL.Query().Get("period"), Sort: request.URL.Query().Get("sort"),
+	})
+	respond(writer, result, err, http.StatusOK)
+}
+
 func actor(request *http.Request) identity.Actor {
 	return request.Context().Value(actorContextKey{}).(identity.Actor)
 }
@@ -385,6 +396,12 @@ func failError(writer http.ResponseWriter, err error) {
 		fail(writer, http.StatusServiceUnavailable, "X_NOT_CONFIGURED", "尚未配置 X API Bearer Token")
 	case errors.Is(err, content.ErrUpstream):
 		fail(writer, http.StatusBadGateway, "CONTENT_SOURCE_UNAVAILABLE", "内容源暂时不可用，请稍后重试")
+	case errors.Is(err, frontier.ErrInvalid):
+		fail(writer, http.StatusBadRequest, "INVALID_FRONTIER_QUERY", "前沿项目筛选条件无效")
+	case errors.Is(err, frontier.ErrRateLimited):
+		fail(writer, http.StatusTooManyRequests, "GITHUB_RATE_LIMITED", "GitHub 搜索额度已用完，请稍后重试或配置访问令牌")
+	case errors.Is(err, frontier.ErrUnavailable):
+		fail(writer, http.StatusBadGateway, "GITHUB_UNAVAILABLE", "GitHub 暂时不可用，请稍后重试")
 	case errors.Is(err, workbench.ErrInvalid):
 		fail(writer, http.StatusBadRequest, "INVALID_REQUEST", "请求参数无效")
 	case errors.Is(err, workbench.ErrNotFound):

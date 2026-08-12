@@ -83,3 +83,35 @@ export interface PeopleResult { people: TrackedPerson[]; xConfigured: boolean; l
 export interface SocialPost { id: string; personId: string; handle: string; displayName: string; content: string; url: string; publishedAt: string; likeCount: number; repostCount: number; replyCount: number; favorite: boolean }
 export interface SyncState { key: string; lastAttemptAt?: string; lastSuccessAt?: string; lastError: string; itemsFetched: number }
 export interface ContentStatus { xConfigured: boolean; refreshHours: number; newsLastSuccessAt?: string; newsLastError: string; peopleLastSuccessAt?: string; peopleLastError: string }
+
+export type FrontierCategory = 'project' | 'skill' | 'plugin'
+export interface FrontierRepository {
+  id: number
+  name: string
+  fullName: string
+  description: string
+  url: string
+  homepage: string
+  owner: string
+  ownerAvatar: string
+  category: FrontierCategory
+  language: string
+  license: string
+  topics: string[]
+  stars: number
+  forks: number
+  openIssues: number
+  score: number
+  signals: string[]
+  createdAt: string
+  updatedAt: string
+  pushedAt: string
+}
+export interface FrontierResult {
+  items: FrontierRepository[]
+  total: number
+  generatedAt: string
+  githubTokenSet: boolean
+  rateLimit: { limit: number; remaining: number; resetAt?: string }
+  stale: boolean
+}

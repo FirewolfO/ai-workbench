@@ -9,6 +9,7 @@
 - 多轮对话、系统提示词、模型切换、自动命名、搜索、置顶、重命名和删除
 - Markdown 回答预览、回答复制、响应延迟及 Token 用量展示
 - 个人提示词库，支持分类、搜索、收藏、使用次数及一键带入对话
+- 前沿项目发现，按 AI 项目、Skill 与插件检索 GitHub，并综合社区规模、活跃度与成熟度排序
 - 个人用量概览和最近对话
 - 所有业务数据严格按 People 用户名隔离
 
@@ -52,6 +53,12 @@ npm --prefix frontend install
 - AI 热点使用各机构公开订阅源：[OpenAI News RSS](https://openai.com/news/rss.xml)、[Google AI RSS](https://blog.google/technology/ai/rss/)、[Hugging Face Blog Feed](https://huggingface.co/blog/feed.xml) 与 [arXiv cs.AI RSS](https://export.arxiv.org/rss/cs.AI)。文章按原文 URL 去重，收藏按 People 用户隔离；页面会使用当前用户启用的模型批量生成简短中文概要并缓存，未配置模型时保留来源原始摘要。
 - 大佬动态默认关注 Codex 产品负责人 Tibor Blaho（`@btibor91`），并允许每位用户维护自己的 X 关注列表。接入遵循 X API v2 的 [User Lookup](https://docs.x.com/x-api/users/lookup/introduction) 与 [Get Posts](https://docs.x.com/x-api/users/get-posts) 接口。
 - X Bearer Token 仅通过后端环境变量 `AI_WORKBENCH_X_BEARER_TOKEN` 提供，不会返回浏览器或写入日志。未配置时 AI 热点仍可正常工作，人物动态页面会显示配置状态。
+
+## 前沿项目
+
+“前沿项目”通过 GitHub Repository Search 实时检索 AI 项目、Skill 和插件，支持关键词、语言、活跃时间与排序筛选。默认推荐分综合 Star、Fork、最近推送和开源协议、主题、主页、讨论区等成熟度信号，不以单一 Star 数代替项目质量。
+
+未配置 `AI_WORKBENCH_GITHUB_TOKEN` 时仍可使用 GitHub 公开搜索额度；生产环境建议配置服务端 Token 以获得更稳定的额度。Token 只由后端使用，不会返回浏览器或写入日志。相同筛选结果会缓存 5 分钟，上游短暂异常时可在一小时内回退到缓存结果。
 
 ## 模型连接
 

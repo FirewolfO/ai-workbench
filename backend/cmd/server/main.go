@@ -8,6 +8,7 @@ import (
 	"ai-workbench/internal/api"
 	"ai-workbench/internal/config"
 	"ai-workbench/internal/content"
+	"ai-workbench/internal/frontier"
 	"ai-workbench/internal/identity"
 	"ai-workbench/internal/llm"
 	"ai-workbench/internal/security"
@@ -35,7 +36,8 @@ func main() {
 		Hour: cfg.NewsRefreshHour, Location: cfg.NewsRefreshTimezone, Lookback: cfg.NewsLookback,
 	})
 	contentService.Start(context.Background())
-	server := api.New(cfg.Address, cfg.AllowedOrigins, identities, service, contentService)
+	frontierService := frontier.New(cfg.GitHubAPIBaseURL, cfg.GitHubToken)
+	server := api.New(cfg.Address, cfg.AllowedOrigins, identities, service, contentService, frontierService)
 	log.Printf("AI Workbench 服务监听于 %s", cfg.Address)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)

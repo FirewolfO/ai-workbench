@@ -20,6 +20,7 @@ const router = createRouter({
         { path: 'providers', name: 'providers', component: () => import('@/views/ProvidersView.vue'), meta: { title: '模型连接' } },
         { path: 'news', name: 'news', component: () => import('@/views/NewsView.vue'), meta: { title: 'AI 热点' } },
         { path: 'people', name: 'people', component: () => import('@/views/PeopleView.vue'), meta: { title: '大佬动态' } },
+        { path: 'frontier', name: 'frontier', component: () => import('@/views/FrontierView.vue'), meta: { title: '前沿项目' } },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },

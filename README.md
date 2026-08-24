@@ -71,6 +71,8 @@ curl http://127.0.0.1:18082/health
 
 当前生产入口为 `https://ai.lxvb.top`，Cloudflare Tunnel 源站指向 `http://127.0.0.1:18082`。该入口与 terminal、iStore Admin、SSH 和 IM 使用不同主机名及端口，部署不需要修改它们的现有路由。
 
+需要提供 APK 等静态下载文件时，将文件放入仓库根目录的 `downloads/`。Compose 会将该目录只读挂载到前端容器，可通过 `https://ai.lxvb.top/downloads/<文件名>` 下载；APK 构建产物不会提交到 Git。
+
 ## Android 客户端
 
 `android/` 是固定访问 `https://ai.lxvb.top` 的原生 WebView 客户端，包含系统文件选择、返回导航、下载、外部链接和 Safe Browsing。它使用 `compileSdk 36`、`targetSdk 36`、`minSdk 35`，覆盖 Android 15 和 Android 16。

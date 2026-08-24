@@ -9,6 +9,7 @@ frontend/playwright-report/
 android/.gradle/
 android/local.properties
 android/**/build/
+downloads/*.apk
 *.log
 *.pid
 .env

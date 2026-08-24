@@ -3,12 +3,17 @@ package workbench
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"ai-workbench/internal/identity"
@@ -26,12 +31,22 @@ var (
 	ErrConflict   = errors.New("conflict")
 	ErrProvider   = errors.New("provider unavailable")
 	ErrNoProvider = errors.New("no enabled provider")
+	ErrForbidden  = errors.New("forbidden")
+	ErrCanceled   = errors.New("generation canceled")
+)
+
+const (
+	maxAttachmentBytes = 8 << 20
+	attachmentTTL      = time.Hour
 )
 
 type Service struct {
-	database *store.Store
-	vault    *security.Vault
-	models   llm.Client
+	database      *store.Store
+	vault         *security.Vault
+	models        llm.Client
+	attachmentDir string
+	inflightMu    sync.Mutex
+	inflight      map[string]context.CancelFunc
 }
 
 type ProviderInput struct {
@@ -51,18 +66,25 @@ type PromptInput struct {
 }
 
 type ConversationInput struct {
-	Title        string `json:"title"`
-	ProviderID   string `json:"providerId"`
-	Model        string `json:"model"`
-	SystemPrompt string `json:"systemPrompt"`
+	Title           string `json:"title"`
+	ProviderID      string `json:"providerId"`
+	Model           string `json:"model"`
+	SystemPrompt    string `json:"systemPrompt"`
+	ReasoningEffort string `json:"reasoningEffort"`
 }
 
 type ConversationPatch struct {
-	Title        *string `json:"title,omitempty"`
-	ProviderID   *string `json:"providerId,omitempty"`
-	Model        *string `json:"model,omitempty"`
-	SystemPrompt *string `json:"systemPrompt,omitempty"`
-	Pinned       *bool   `json:"pinned,omitempty"`
+	Title           *string `json:"title,omitempty"`
+	ProviderID      *string `json:"providerId,omitempty"`
+	Model           *string `json:"model,omitempty"`
+	SystemPrompt    *string `json:"systemPrompt,omitempty"`
+	Pinned          *bool   `json:"pinned,omitempty"`
+	ReasoningEffort *string `json:"reasoningEffort,omitempty"`
+}
+
+type MessageInput struct {
+	Content       string   `json:"content"`
+	AttachmentIDs []string `json:"attachmentIds"`
 }
 
 type Dashboard struct {
@@ -84,8 +106,21 @@ type NewsSummaryResult struct {
 	Summaries map[string]string `json:"summaries"`
 }
 
-func New(database *store.Store, vault *security.Vault, models llm.Client) *Service {
-	return &Service{database: database, vault: vault, models: models}
+type AvailableModel struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	DefaultModel string `json:"defaultModel"`
+}
+
+func New(database *store.Store, vault *security.Vault, models llm.Client, attachmentDirs ...string) *Service {
+	attachmentDir := filepath.Join(os.TempDir(), "ai-workbench-attachments")
+	if len(attachmentDirs) > 0 && strings.TrimSpace(attachmentDirs[0]) != "" {
+		attachmentDir = attachmentDirs[0]
+	}
+	service := &Service{database: database, vault: vault, models: models, attachmentDir: attachmentDir, inflight: map[string]context.CancelFunc{}}
+	_ = os.MkdirAll(attachmentDir, 0o700)
+	_ = service.cleanupExpiredAttachments()
+	return service
 }
 
 func (s *Service) Dashboard(actor identity.Actor) (*Dashboard, error) {
@@ -94,19 +129,37 @@ func (s *Service) Dashboard(actor identity.Actor) (*Dashboard, error) {
 		model any
 		count *int64
 	}{
-		{&model.Conversation{}, &result.ConversationCount}, {&model.Prompt{}, &result.PromptCount}, {&model.Provider{}, &result.ProviderCount},
+		{&model.Conversation{}, &result.ConversationCount}, {&model.Prompt{}, &result.PromptCount},
 	}
 	for _, query := range queries {
-		if err := s.database.DB.Model(query.model).Where("owner_id = ?", actor.Username).Count(query.count).Error; err != nil {
+		database := s.database.DB.Model(query.model)
+		if !actor.IsAdmin() {
+			database = database.Where("owner_id = ?", ownerID(actor))
+		}
+		if err := database.Count(query.count).Error; err != nil {
 			return nil, err
 		}
 	}
-	if err := s.database.DB.Model(&model.Message{}).
-		Where("conversation_id IN (?)", s.database.DB.Model(&model.Conversation{}).Select("id").Where("owner_id = ?", actor.Username)).
-		Count(&result.MessageCount).Select("COALESCE(SUM(prompt_tokens + completion_tokens), 0)").Scan(&result.TotalTokens).Error; err != nil {
+	if actor.IsAdmin() {
+		if err := s.database.DB.Model(&model.Provider{}).Count(&result.ProviderCount).Error; err != nil {
+			return nil, err
+		}
+	}
+	messages := s.database.DB.Model(&model.Message{})
+	if !actor.IsAdmin() {
+		messages = messages.Where("conversation_id IN (?)", s.database.DB.Model(&model.Conversation{}).Select("id").Where("owner_id = ?", ownerID(actor)))
+	}
+	if err := messages.Count(&result.MessageCount).Error; err != nil {
 		return nil, err
 	}
-	if err := s.database.DB.Where("owner_id = ?", actor.Username).Order("updated_at DESC").Limit(5).Find(&result.Recent).Error; err != nil {
+	tokens := s.database.DB.Model(&model.Message{})
+	if !actor.IsAdmin() {
+		tokens = tokens.Where("conversation_id IN (?)", s.database.DB.Model(&model.Conversation{}).Select("id").Where("owner_id = ?", ownerID(actor)))
+	}
+	if err := tokens.Select("COALESCE(SUM(prompt_tokens + completion_tokens), 0)").Scan(&result.TotalTokens).Error; err != nil {
+		return nil, err
+	}
+	if err := s.database.DB.Where("owner_id = ?", ownerID(actor)).Order("updated_at DESC").Limit(5).Find(&result.Recent).Error; err != nil {
 		return nil, err
 	}
 	for index := range result.Recent {
@@ -116,8 +169,11 @@ func (s *Service) Dashboard(actor identity.Actor) (*Dashboard, error) {
 }
 
 func (s *Service) Providers(actor identity.Actor) ([]model.Provider, error) {
+	if !actor.IsAdmin() {
+		return nil, ErrForbidden
+	}
 	var providers []model.Provider
-	if err := s.database.DB.Where("owner_id = ?", actor.Username).Order("created_at ASC").Find(&providers).Error; err != nil {
+	if err := s.database.DB.Order("created_at ASC").Find(&providers).Error; err != nil {
 		return nil, err
 	}
 	for index := range providers {
@@ -126,8 +182,23 @@ func (s *Service) Providers(actor identity.Actor) ([]model.Provider, error) {
 	return providers, nil
 }
 
+func (s *Service) AvailableModels(_ identity.Actor) ([]AvailableModel, error) {
+	var providers []model.Provider
+	if err := s.database.DB.Where("enabled = ?", true).Order("created_at ASC").Find(&providers).Error; err != nil {
+		return nil, err
+	}
+	result := make([]AvailableModel, 0, len(providers))
+	for _, provider := range providers {
+		result = append(result, AvailableModel{ID: provider.ID, Name: provider.Name, DefaultModel: provider.DefaultModel})
+	}
+	return result, nil
+}
+
 func (s *Service) CreateProvider(actor identity.Actor, input ProviderInput) (*model.Provider, error) {
-	provider, err := s.providerFromInput(actor.Username, input, nil)
+	if !actor.IsAdmin() {
+		return nil, ErrForbidden
+	}
+	provider, err := s.providerFromInput(ownerID(actor), input, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -140,11 +211,14 @@ func (s *Service) CreateProvider(actor identity.Actor, input ProviderInput) (*mo
 }
 
 func (s *Service) UpdateProvider(actor identity.Actor, id string, input ProviderInput) (*model.Provider, error) {
+	if !actor.IsAdmin() {
+		return nil, ErrForbidden
+	}
 	current, err := s.provider(actor, id)
 	if err != nil {
 		return nil, err
 	}
-	next, err := s.providerFromInput(actor.Username, input, current)
+	next, err := s.providerFromInput(current.OwnerID, input, current)
 	if err != nil {
 		return nil, err
 	}
@@ -157,12 +231,15 @@ func (s *Service) UpdateProvider(actor identity.Actor, id string, input Provider
 }
 
 func (s *Service) DeleteProvider(actor identity.Actor, id string) error {
+	if !actor.IsAdmin() {
+		return ErrForbidden
+	}
 	provider, err := s.provider(actor, id)
 	if err != nil {
 		return err
 	}
 	var count int64
-	if err := s.database.DB.Model(&model.Conversation{}).Where("owner_id = ? AND provider_id = ?", actor.Username, id).Count(&count).Error; err != nil {
+	if err := s.database.DB.Model(&model.Conversation{}).Where("provider_id = ?", id).Count(&count).Error; err != nil {
 		return err
 	}
 	if count > 0 {
@@ -172,6 +249,9 @@ func (s *Service) DeleteProvider(actor identity.Actor, id string) error {
 }
 
 func (s *Service) TestProvider(ctx context.Context, actor identity.Actor, id string) (*ProviderTest, error) {
+	if !actor.IsAdmin() {
+		return nil, ErrForbidden
+	}
 	provider, err := s.provider(actor, id)
 	if err != nil {
 		return nil, err
@@ -213,7 +293,7 @@ func (s *Service) SummarizeNews(ctx context.Context, actor identity.Actor, artic
 		return result, nil
 	}
 	var provider model.Provider
-	if err := s.database.DB.Where("owner_id = ? AND enabled = ?", actor.Username, true).Order("created_at ASC").First(&provider).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := s.database.DB.Where("enabled = ?", true).Order("created_at ASC").First(&provider).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNoProvider
 	} else if err != nil {
 		return nil, err
@@ -310,7 +390,7 @@ func (s *Service) providerFromInput(owner string, input ProviderInput, current *
 
 func (s *Service) provider(actor identity.Actor, id string) (*model.Provider, error) {
 	var provider model.Provider
-	if err := s.database.DB.Where("id = ? AND owner_id = ?", id, actor.Username).First(&provider).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := s.database.DB.Where("id = ?", id).First(&provider).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	} else if err != nil {
 		return nil, err
@@ -326,7 +406,7 @@ func (s *Service) providerKey(provider *model.Provider) (string, error) {
 }
 
 func (s *Service) Prompts(actor identity.Actor, search string) ([]model.Prompt, error) {
-	query := s.database.DB.Where("owner_id = ?", actor.Username)
+	query := s.database.DB.Where("owner_id = ?", ownerID(actor))
 	if term := strings.TrimSpace(search); term != "" {
 		like := "%" + term + "%"
 		query = query.Where("title LIKE ? OR description LIKE ? OR content LIKE ?", like, like, like)
@@ -337,7 +417,7 @@ func (s *Service) Prompts(actor identity.Actor, search string) ([]model.Prompt, 
 }
 
 func (s *Service) CreatePrompt(actor identity.Actor, input PromptInput) (*model.Prompt, error) {
-	prompt, err := promptFromInput(actor.Username, input)
+	prompt, err := promptFromInput(ownerID(actor), input)
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +433,7 @@ func (s *Service) UpdatePrompt(actor identity.Actor, id string, input PromptInpu
 	if err != nil {
 		return nil, err
 	}
-	prompt, err := promptFromInput(actor.Username, input)
+	prompt, err := promptFromInput(ownerID(actor), input)
 	if err != nil {
 		return nil, err
 	}
@@ -401,7 +481,7 @@ func promptFromInput(owner string, input PromptInput) (*model.Prompt, error) {
 
 func (s *Service) prompt(actor identity.Actor, id string) (*model.Prompt, error) {
 	var prompt model.Prompt
-	if err := s.database.DB.Where("id = ? AND owner_id = ?", id, actor.Username).First(&prompt).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := s.database.DB.Where("id = ? AND owner_id = ?", id, ownerID(actor)).First(&prompt).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	} else if err != nil {
 		return nil, err
@@ -410,7 +490,7 @@ func (s *Service) prompt(actor identity.Actor, id string) (*model.Prompt, error)
 }
 
 func (s *Service) Conversations(actor identity.Actor, search string) ([]model.Conversation, error) {
-	query := s.database.DB.Where("owner_id = ?", actor.Username)
+	query := s.database.DB.Where("owner_id = ?", ownerID(actor))
 	if term := strings.TrimSpace(search); term != "" {
 		query = query.Where("title LIKE ?", "%"+term+"%")
 	}
@@ -425,7 +505,14 @@ func (s *Service) Conversations(actor identity.Actor, search string) ([]model.Co
 }
 
 func (s *Service) CreateConversation(actor identity.Actor, input ConversationInput) (*model.Conversation, error) {
-	provider, err := s.provider(actor, strings.TrimSpace(input.ProviderID))
+	providerID := strings.TrimSpace(input.ProviderID)
+	var provider *model.Provider
+	var err error
+	if providerID == "" {
+		provider, err = s.defaultProvider()
+	} else {
+		provider, err = s.provider(actor, providerID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -443,7 +530,11 @@ func (s *Service) CreateConversation(actor identity.Actor, input ConversationInp
 	if len(title) > 160 || len(modelName) > 160 || len(input.SystemPrompt) > 10000 {
 		return nil, ErrInvalid
 	}
-	conversation := &model.Conversation{ID: newID("cnv"), OwnerID: actor.Username, Title: title, ProviderID: provider.ID, Model: modelName, SystemPrompt: strings.TrimSpace(input.SystemPrompt)}
+	reasoningEffort := normalizeReasoningEffort(input.ReasoningEffort)
+	if reasoningEffort == "" {
+		return nil, ErrInvalid
+	}
+	conversation := &model.Conversation{ID: newID("cnv"), OwnerID: ownerID(actor), Title: title, ProviderID: provider.ID, Model: modelName, SystemPrompt: strings.TrimSpace(input.SystemPrompt), ReasoningEffort: reasoningEffort}
 	if err := s.database.DB.Create(conversation).Error; err != nil {
 		return nil, err
 	}
@@ -452,7 +543,7 @@ func (s *Service) CreateConversation(actor identity.Actor, input ConversationInp
 
 func (s *Service) Conversation(actor identity.Actor, id string) (*model.Conversation, error) {
 	var conversation model.Conversation
-	if err := s.database.DB.Where("id = ? AND owner_id = ?", id, actor.Username).First(&conversation).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := s.database.DB.Where("id = ? AND owner_id = ?", id, ownerID(actor)).First(&conversation).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
 	} else if err != nil {
 		return nil, err
@@ -461,6 +552,9 @@ func (s *Service) Conversation(actor identity.Actor, id string) (*model.Conversa
 		return nil, err
 	}
 	conversation.MessageCount = int64(len(conversation.Messages))
+	for index := range conversation.Messages {
+		conversation.Messages[index].Attachments = attachmentNames(conversation.Messages[index].AttachmentNames)
+	}
 	return &conversation, nil
 }
 
@@ -488,6 +582,13 @@ func (s *Service) UpdateConversation(actor identity.Actor, id string, patch Conv
 	if patch.SystemPrompt != nil {
 		conversation.SystemPrompt = strings.TrimSpace(*patch.SystemPrompt)
 	}
+	if patch.ReasoningEffort != nil {
+		reasoningEffort := normalizeReasoningEffort(*patch.ReasoningEffort)
+		if reasoningEffort == "" {
+			return nil, ErrInvalid
+		}
+		conversation.ReasoningEffort = reasoningEffort
+	}
 	if patch.Pinned != nil {
 		conversation.Pinned = *patch.Pinned
 	}
@@ -509,9 +610,9 @@ func (s *Service) DeleteConversation(actor identity.Actor, id string) error {
 	return s.database.DB.Delete(conversation).Error
 }
 
-func (s *Service) SendMessage(ctx context.Context, actor identity.Actor, conversationID, content string) (*model.Message, error) {
-	content = strings.TrimSpace(content)
-	if content == "" || len(content) > 20000 {
+func (s *Service) SendMessage(ctx context.Context, actor identity.Actor, conversationID string, input MessageInput) (*model.Message, error) {
+	content := strings.TrimSpace(input.Content)
+	if (content == "" && len(input.AttachmentIDs) == 0) || len(content) > 20000 || len(input.AttachmentIDs) > 4 {
 		return nil, ErrInvalid
 	}
 	conversation, err := s.Conversation(actor, conversationID)
@@ -522,12 +623,25 @@ func (s *Service) SendMessage(ctx context.Context, actor identity.Actor, convers
 	if err != nil || !provider.Enabled {
 		return nil, fmt.Errorf("%w: model provider is unavailable", ErrInvalid)
 	}
-	userMessage := &model.Message{ID: newID("msg"), ConversationID: conversation.ID, Role: "user", Content: content, Status: "completed"}
+	attachments, err := s.consumeAttachments(actor, input.AttachmentIDs)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(attachments))
+	for _, attachment := range attachments {
+		names = append(names, attachment.record.Name)
+	}
+	storedContent := content
+	if storedContent == "" {
+		storedContent = "请处理附件：" + strings.Join(names, "、")
+	}
+	namesJSON, _ := json.Marshal(names)
+	userMessage := &model.Message{ID: newID("msg"), ConversationID: conversation.ID, Role: "user", Content: storedContent, Status: "completed", AttachmentNames: string(namesJSON), Attachments: names}
 	if err := s.database.DB.Create(userMessage).Error; err != nil {
 		return nil, err
 	}
 	if conversation.Title == "新对话" && len(conversation.Messages) == 0 {
-		title := content
+		title := storedContent
 		if len([]rune(title)) > 28 {
 			title = string([]rune(title)[:28])
 		}
@@ -547,13 +661,23 @@ func (s *Service) SendMessage(ctx context.Context, actor identity.Actor, convers
 			messages = append(messages, llm.Message{Role: message.Role, Content: message.Content})
 		}
 	}
-	messages = append(messages, llm.Message{Role: "user", Content: content})
+	messages = append(messages, llm.Message{Role: "user", Content: completionContent(content, attachments)})
 	key, err := s.providerKey(provider)
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.models.Complete(ctx, llm.CompletionRequest{BaseURL: provider.BaseURL, APIKey: key, Model: conversation.Model, Messages: messages, Temperature: 0.7})
+	modelContext, cancel, err := s.beginGeneration(ctx, actor, conversation.ID)
 	if err != nil {
+		return nil, err
+	}
+	defer s.endGeneration(actor, conversation.ID, cancel)
+	result, err := s.models.Complete(modelContext, llm.CompletionRequest{BaseURL: provider.BaseURL, APIKey: key, Model: conversation.Model, Messages: messages, Temperature: 0.7, ReasoningEffort: conversation.ReasoningEffort})
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			stopped := &model.Message{ID: newID("msg"), ConversationID: conversation.ID, Role: "assistant", Content: "已停止生成", Model: conversation.Model, Status: "stopped"}
+			_ = s.database.DB.Create(stopped).Error
+			return nil, ErrCanceled
+		}
 		reason := strings.TrimSpace(err.Error())
 		if runes := []rune(reason); len(runes) > 400 {
 			reason = string(runes[:400]) + "..."
@@ -577,12 +701,224 @@ func (s *Service) SendMessage(ctx context.Context, actor identity.Actor, convers
 	return assistant, nil
 }
 
+func (s *Service) StopGeneration(actor identity.Actor, conversationID string) (bool, error) {
+	if _, err := s.Conversation(actor, conversationID); err != nil {
+		return false, err
+	}
+	key := generationKey(actor, conversationID)
+	s.inflightMu.Lock()
+	cancel := s.inflight[key]
+	s.inflightMu.Unlock()
+	if cancel == nil {
+		return false, nil
+	}
+	cancel()
+	return true, nil
+}
+
+func (s *Service) beginGeneration(ctx context.Context, actor identity.Actor, conversationID string) (context.Context, context.CancelFunc, error) {
+	key := generationKey(actor, conversationID)
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	if _, exists := s.inflight[key]; exists {
+		return nil, nil, ErrConflict
+	}
+	modelContext, cancel := context.WithCancel(ctx)
+	s.inflight[key] = cancel
+	return modelContext, cancel, nil
+}
+
+func (s *Service) endGeneration(actor identity.Actor, conversationID string, cancel context.CancelFunc) {
+	cancel()
+	s.inflightMu.Lock()
+	delete(s.inflight, generationKey(actor, conversationID))
+	s.inflightMu.Unlock()
+}
+
+func (s *Service) CreateAttachment(actor identity.Actor, name, contentType string, data []byte) (*model.Attachment, error) {
+	name = strings.TrimSpace(filepath.Base(name))
+	if name == "" || name == "." || len([]rune(name)) > 255 || len(data) == 0 || len(data) > maxAttachmentBytes {
+		return nil, ErrInvalid
+	}
+	if err := s.cleanupExpiredAttachments(); err != nil {
+		return nil, err
+	}
+	if contentType = strings.TrimSpace(strings.Split(contentType, ";")[0]); contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	attachment := &model.Attachment{ID: newID("att"), OwnerID: ownerID(actor), Name: name, ContentType: contentType, Size: int64(len(data)), ExpiresAt: time.Now().UTC().Add(attachmentTTL)}
+	extension := filepath.Ext(name)
+	if len(extension) > 12 {
+		extension = ""
+	}
+	attachment.Path = filepath.Join(s.attachmentDir, attachment.ID+extension)
+	if err := os.MkdirAll(s.attachmentDir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(attachment.Path, data, 0o600); err != nil {
+		return nil, err
+	}
+	if err := s.database.DB.Create(attachment).Error; err != nil {
+		_ = os.Remove(attachment.Path)
+		return nil, err
+	}
+	return attachment, nil
+}
+
+func (s *Service) DeleteAttachment(actor identity.Actor, id string) error {
+	var attachment model.Attachment
+	if err := s.database.DB.Where("id = ? AND owner_id = ?", id, ownerID(actor)).First(&attachment).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	_ = os.Remove(attachment.Path)
+	return s.database.DB.Delete(&attachment).Error
+}
+
+type consumedAttachment struct {
+	record model.Attachment
+	data   []byte
+}
+
+func (s *Service) consumeAttachments(actor identity.Actor, ids []string) ([]consumedAttachment, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	unique := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || unique[id] {
+			return nil, ErrInvalid
+		}
+		unique[id] = true
+	}
+	var records []model.Attachment
+	if err := s.database.DB.Where("id IN ? AND owner_id = ? AND expires_at > ?", ids, ownerID(actor), time.Now().UTC()).Find(&records).Error; err != nil {
+		return nil, err
+	}
+	if len(records) != len(ids) {
+		return nil, ErrNotFound
+	}
+	byID := make(map[string]model.Attachment, len(records))
+	for _, record := range records {
+		byID[record.ID] = record
+	}
+	result := make([]consumedAttachment, 0, len(ids))
+	for _, id := range ids {
+		record := byID[id]
+		data, err := os.ReadFile(record.Path)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, consumedAttachment{record: record, data: data})
+	}
+	for _, attachment := range result {
+		_ = os.Remove(attachment.record.Path)
+	}
+	if err := s.database.DB.Where("id IN ?", ids).Delete(&model.Attachment{}).Error; err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func completionContent(content string, attachments []consumedAttachment) any {
+	if len(attachments) == 0 {
+		return content
+	}
+	parts := []llm.ContentPart{{Type: "text", Text: content}}
+	if strings.TrimSpace(content) == "" {
+		parts[0].Text = "请分析以下附件。"
+	}
+	for _, attachment := range attachments {
+		if strings.HasPrefix(attachment.record.ContentType, "image/") {
+			parts = append(parts, llm.ContentPart{Type: "image_url", ImageURL: &llm.ImageURL{URL: "data:" + attachment.record.ContentType + ";base64," + base64.StdEncoding.EncodeToString(attachment.data)}})
+			continue
+		}
+		text := string(attachment.data)
+		if !strings.HasPrefix(attachment.record.ContentType, "text/") && !strings.Contains(attachment.record.ContentType, "json") && !strings.Contains(attachment.record.ContentType, "xml") {
+			text = "base64:" + base64.StdEncoding.EncodeToString(attachment.data)
+		}
+		parts = append(parts, llm.ContentPart{Type: "text", Text: fmt.Sprintf("附件 %s (%s):\n%s", attachment.record.Name, attachment.record.ContentType, text)})
+	}
+	return parts
+}
+
+func (s *Service) cleanupExpiredAttachments() error {
+	var attachments []model.Attachment
+	if err := s.database.DB.Where("expires_at <= ?", time.Now().UTC()).Find(&attachments).Error; err != nil {
+		return err
+	}
+	for _, attachment := range attachments {
+		_ = os.Remove(attachment.Path)
+	}
+	if len(attachments) > 0 {
+		return s.database.DB.Where("expires_at <= ?", time.Now().UTC()).Delete(&model.Attachment{}).Error
+	}
+	return nil
+}
+
+func (s *Service) StartAttachmentCleanup(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = s.cleanupExpiredAttachments()
+			}
+		}
+	}()
+}
+
 func (s *Service) decorateConversation(conversation *model.Conversation) {
 	_ = s.database.DB.Model(&model.Message{}).Where("conversation_id = ?", conversation.ID).Count(&conversation.MessageCount).Error
 	var latest model.Message
 	if s.database.DB.Where("conversation_id = ?", conversation.ID).Order("created_at DESC").First(&latest).Error == nil {
 		conversation.LastMessage = latest.Content
 	}
+}
+
+func (s *Service) defaultProvider() (*model.Provider, error) {
+	var provider model.Provider
+	if err := s.database.DB.Where("enabled = ?", true).Order("created_at ASC").First(&provider).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNoProvider
+	} else if err != nil {
+		return nil, err
+	}
+	return &provider, nil
+}
+
+func normalizeReasoningEffort(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "medium":
+		return "medium"
+	case "fast":
+		return "fast"
+	case "high":
+		return "high"
+	default:
+		return ""
+	}
+}
+
+func attachmentNames(value string) []string {
+	var names []string
+	_ = json.Unmarshal([]byte(value), &names)
+	return names
+}
+
+func generationKey(actor identity.Actor, conversationID string) string {
+	return ownerID(actor) + ":" + conversationID
+}
+
+func ownerID(actor identity.Actor) string {
+	if strings.TrimSpace(actor.ID) != "" {
+		return actor.ID
+	}
+	return actor.Username
 }
 
 func newID(prefix string) string {

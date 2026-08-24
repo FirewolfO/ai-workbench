@@ -10,22 +10,66 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
 	"ai-workbench/internal/model"
 	"ai-workbench/internal/store"
 
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
-var ErrUnauthorized = errors.New("unauthorized")
+var (
+	ErrUnauthorized = errors.New("unauthorized")
+	ErrForbidden    = errors.New("forbidden")
+	ErrInvalid      = errors.New("invalid input")
+	ErrConflict     = errors.New("conflict")
+	ErrNotFound     = errors.New("not found")
+)
+
+const (
+	RoleAdmin = "admin"
+	RoleUser  = "user"
+)
+
+var usernamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{2,39}$`)
 
 type Actor struct {
 	ID          string `json:"id"`
 	Username    string `json:"username"`
 	DisplayName string `json:"displayName"`
-	Source      string `json:"-"`
+	Source      string `json:"source"`
+	Role        string `json:"role"`
+}
+
+func (actor Actor) IsAdmin() bool { return actor.Source == "internal" && actor.Role == RoleAdmin }
+
+type UserInput struct {
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName"`
+	Password    string `json:"password"`
+}
+
+type UserPatch struct {
+	DisplayName *string `json:"displayName,omitempty"`
+	Password    string  `json:"password"`
+	Enabled     *bool   `json:"enabled,omitempty"`
+}
+
+type InternalUserView struct {
+	Username    string    `json:"username"`
+	DisplayName string    `json:"displayName"`
+	Role        string    `json:"role"`
+	Enabled     bool      `json:"enabled"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+type CreatedUser struct {
+	User            InternalUserView `json:"user"`
+	InitialPassword string           `json:"initialPassword"`
 }
 
 type SessionResult struct {
@@ -95,15 +139,37 @@ func (c *Client) Exchange(ctx context.Context, code, state, redirectURI string) 
 	if err != nil {
 		return nil, err
 	}
+	return c.createSession(*actor)
+}
+
+func (c *Client) InternalLogin(_ context.Context, username, password string) (*SessionResult, error) {
+	username = strings.TrimSpace(username)
+	var user model.InternalUser
+	if err := c.database.DB.Where("username = ? AND enabled = ?", username, true).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrUnauthorized
+		}
+		return nil, err
+	}
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
+		return nil, ErrUnauthorized
+	}
+	return c.createSession(Actor{ID: "internal:" + user.Username, Username: user.Username, DisplayName: user.DisplayName, Source: "internal", Role: user.Role})
+}
+
+func (c *Client) createSession(actor Actor) (*SessionResult, error) {
 	token, err := randomToken(32)
 	if err != nil {
 		return nil, err
 	}
 	expiresAt := time.Now().UTC().Add(12 * time.Hour)
-	if err := c.database.DB.Create(&model.Session{TokenHash: hash(token), Username: actor.Username, DisplayName: actor.DisplayName, ExpiresAt: expiresAt}).Error; err != nil {
+	if actor.Role == "" {
+		actor.Role = RoleUser
+	}
+	if err := c.database.DB.Create(&model.Session{TokenHash: hash(token), Username: actor.Username, DisplayName: actor.DisplayName, Source: actor.Source, Role: actor.Role, ExpiresAt: expiresAt}).Error; err != nil {
 		return nil, err
 	}
-	return &SessionResult{AccessToken: token, ExpiresAt: expiresAt, User: *actor}, nil
+	return &SessionResult{AccessToken: token, ExpiresAt: expiresAt, User: actor}, nil
 }
 
 func (c *Client) Authenticate(ctx context.Context, token string) (*Actor, error) {
@@ -113,11 +179,147 @@ func (c *Client) Authenticate(ctx context.Context, token string) (*Actor, error)
 	}
 	var session model.Session
 	if err := c.database.DB.Where("token_hash = ? AND expires_at > ?", hash(token), time.Now().UTC()).First(&session).Error; err == nil {
-		return &Actor{ID: session.Username, Username: session.Username, DisplayName: session.DisplayName, Source: "people"}, nil
+		source, role := session.Source, session.Role
+		if source == "" {
+			source = "people"
+		}
+		if role == "" {
+			role = RoleUser
+		}
+		if source == "internal" {
+			var user model.InternalUser
+			if err := c.database.DB.Where("username = ? AND enabled = ?", session.Username, true).First(&user).Error; err != nil {
+				return nil, ErrUnauthorized
+			}
+			return &Actor{ID: "internal:" + user.Username, Username: user.Username, DisplayName: user.DisplayName, Source: source, Role: user.Role}, nil
+		}
+		return &Actor{ID: session.Username, Username: session.Username, DisplayName: session.DisplayName, Source: source, Role: role}, nil
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
 	return c.permissionIdentity(ctx, token)
+}
+
+func (c *Client) Users(actor Actor) ([]InternalUserView, error) {
+	if !actor.IsAdmin() {
+		return nil, ErrForbidden
+	}
+	var users []model.InternalUser
+	if err := c.database.DB.Order("CASE WHEN role = 'admin' THEN 0 ELSE 1 END, created_at ASC").Find(&users).Error; err != nil {
+		return nil, err
+	}
+	result := make([]InternalUserView, 0, len(users))
+	for _, user := range users {
+		result = append(result, userView(user))
+	}
+	return result, nil
+}
+
+func (c *Client) CreateUser(actor Actor, input UserInput) (*CreatedUser, error) {
+	if !actor.IsAdmin() {
+		return nil, ErrForbidden
+	}
+	input.Username = strings.TrimSpace(input.Username)
+	input.DisplayName = strings.TrimSpace(input.DisplayName)
+	if !usernamePattern.MatchString(input.Username) || len([]rune(input.DisplayName)) > 120 {
+		return nil, ErrInvalid
+	}
+	if input.DisplayName == "" {
+		input.DisplayName = input.Username
+	}
+	initialPassword := input.Password
+	if initialPassword == "" {
+		initialPassword = input.Username + "@123"
+	}
+	if len(initialPassword) < 8 || len(initialPassword) > 128 {
+		return nil, ErrInvalid
+	}
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(initialPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, err
+	}
+	user := model.InternalUser{Username: input.Username, DisplayName: input.DisplayName, PasswordHash: string(passwordHash), Role: RoleUser, Enabled: true}
+	if err := c.database.DB.Create(&user).Error; err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return nil, ErrConflict
+		}
+		return nil, err
+	}
+	return &CreatedUser{User: userView(user), InitialPassword: initialPassword}, nil
+}
+
+func (c *Client) UpdateUser(actor Actor, username string, patch UserPatch) (*InternalUserView, error) {
+	if !actor.IsAdmin() {
+		return nil, ErrForbidden
+	}
+	username = strings.TrimSpace(username)
+	var user model.InternalUser
+	if err := c.database.DB.First(&user, "username = ?", username).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	if patch.DisplayName != nil {
+		name := strings.TrimSpace(*patch.DisplayName)
+		if name == "" || len([]rune(name)) > 120 {
+			return nil, ErrInvalid
+		}
+		user.DisplayName = name
+	}
+	if patch.Enabled != nil {
+		if user.Role == RoleAdmin && !*patch.Enabled {
+			return nil, ErrConflict
+		}
+		user.Enabled = *patch.Enabled
+	}
+	passwordChanged := false
+	if patch.Password != "" {
+		if len(patch.Password) < 8 || len(patch.Password) > 128 {
+			return nil, ErrInvalid
+		}
+		passwordHash, err := bcrypt.GenerateFromPassword([]byte(patch.Password), bcrypt.DefaultCost)
+		if err != nil {
+			return nil, err
+		}
+		user.PasswordHash = string(passwordHash)
+		passwordChanged = true
+	}
+	if err := c.database.DB.Save(&user).Error; err != nil {
+		return nil, err
+	}
+	if passwordChanged || (patch.Enabled != nil && !*patch.Enabled) {
+		if err := c.database.DB.Where("username = ? AND source = ?", user.Username, "internal").Delete(&model.Session{}).Error; err != nil {
+			return nil, err
+		}
+	}
+	view := userView(user)
+	return &view, nil
+}
+
+func (c *Client) DeleteUser(actor Actor, username string) error {
+	if !actor.IsAdmin() {
+		return ErrForbidden
+	}
+	username = strings.TrimSpace(username)
+	var user model.InternalUser
+	if err := c.database.DB.First(&user, "username = ?", username).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if user.Role == RoleAdmin {
+		return ErrConflict
+	}
+	return c.database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("username = ? AND source = ?", user.Username, "internal").Delete(&model.Session{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&user).Error
+	})
+}
+
+func userView(user model.InternalUser) InternalUserView {
+	return InternalUserView{Username: user.Username, DisplayName: user.DisplayName, Role: user.Role, Enabled: user.Enabled, CreatedAt: user.CreatedAt, UpdatedAt: user.UpdatedAt}
 }
 
 func (c *Client) Logout(token string) error {
@@ -157,7 +359,7 @@ func (c *Client) exchangePeople(ctx context.Context, code, redirectURI string) (
 	if err := json.NewDecoder(response.Body).Decode(&employee); err != nil || response.StatusCode != http.StatusOK || employee.Username == "" || employee.Status != "enabled" {
 		return nil, ErrUnauthorized
 	}
-	return &Actor{ID: employee.Username, Username: employee.Username, DisplayName: employee.DisplayName, Source: "people"}, nil
+	return &Actor{ID: employee.Username, Username: employee.Username, DisplayName: employee.DisplayName, Source: "people", Role: RoleUser}, nil
 }
 
 func (c *Client) permissionIdentity(ctx context.Context, token string) (*Actor, error) {
@@ -183,7 +385,7 @@ func (c *Client) permissionIdentity(ctx context.Context, token string) (*Actor, 
 		return nil, ErrUnauthorized
 	}
 	user := payload.Data.User
-	return &Actor{ID: user.Username, Username: user.Username, DisplayName: user.DisplayName, Source: "permission"}, nil
+	return &Actor{ID: user.Username, Username: user.Username, DisplayName: user.DisplayName, Source: "permission", Role: RoleUser}, nil
 }
 
 func randomToken(size int) (string, error) {

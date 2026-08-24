@@ -15,15 +15,26 @@ import (
 
 type Message struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
+}
+
+type ContentPart struct {
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *ImageURL `json:"image_url,omitempty"`
+}
+
+type ImageURL struct {
+	URL string `json:"url"`
 }
 
 type CompletionRequest struct {
-	BaseURL     string
-	APIKey      string
-	Model       string
-	Messages    []Message
-	Temperature float64
+	BaseURL         string
+	APIKey          string
+	Model           string
+	Messages        []Message
+	Temperature     float64
+	ReasoningEffort string
 }
 
 type CompletionResult struct {
@@ -48,9 +59,13 @@ func (c *HTTPClient) Complete(ctx context.Context, input CompletionRequest) (*Co
 	if err != nil {
 		return nil, err
 	}
-	body, err := json.Marshal(map[string]any{
-		"model": input.Model, "messages": input.Messages, "temperature": input.Temperature,
-	})
+	requestPayload := map[string]any{"model": input.Model, "messages": input.Messages}
+	if effort := providerReasoningEffort(input.ReasoningEffort); effort != "" {
+		requestPayload["reasoning_effort"] = effort
+	} else {
+		requestPayload["temperature"] = input.Temperature
+	}
+	body, err := json.Marshal(requestPayload)
 	if err != nil {
 		return nil, err
 	}
@@ -76,23 +91,39 @@ func (c *HTTPClient) Complete(ctx context.Context, input CompletionRequest) (*Co
 	if !isJSON(response.Header.Get("Content-Type")) {
 		return nil, fmt.Errorf("模型服务返回 %s 而不是 JSON，请检查 Base URL 是否指向 API 根路径（通常以 /v1 结尾）", contentType(response.Header.Get("Content-Type")))
 	}
-	var payload struct {
+	var responsePayload struct {
 		Model   string `json:"model"`
 		Choices []struct {
-			Message Message `json:"message"`
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
 		} `json:"choices"`
 		Usage struct {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
 		} `json:"usage"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil || len(payload.Choices) == 0 || strings.TrimSpace(payload.Choices[0].Message.Content) == "" {
+	if err := json.NewDecoder(response.Body).Decode(&responsePayload); err != nil || len(responsePayload.Choices) == 0 || strings.TrimSpace(responsePayload.Choices[0].Message.Content) == "" {
 		return nil, fmt.Errorf("模型服务返回了无效响应")
 	}
 	return &CompletionResult{
-		Content: payload.Choices[0].Message.Content, Model: payload.Model,
-		PromptTokens: payload.Usage.PromptTokens, CompletionTokens: payload.Usage.CompletionTokens, Latency: latency,
+		Content: responsePayload.Choices[0].Message.Content, Model: responsePayload.Model,
+		PromptTokens: responsePayload.Usage.PromptTokens, CompletionTokens: responsePayload.Usage.CompletionTokens, Latency: latency,
 	}, nil
+}
+
+func providerReasoningEffort(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "fast":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high":
+		return "high"
+	default:
+		return ""
+	}
 }
 
 func (c *HTTPClient) Test(ctx context.Context, baseURL, apiKey, model string) (time.Duration, error) {

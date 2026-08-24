@@ -1,5 +1,15 @@
-export interface User { id: string; username: string; displayName: string }
+export interface User { id: string; username: string; displayName: string; source: 'internal' | 'people' | 'permission'; role: 'admin' | 'user' }
 export interface Session { accessToken: string; expiresAt: string; user: User }
+
+export interface InternalUser {
+  username: string
+  displayName: string
+  role: 'admin' | 'user'
+  enabled: boolean
+  createdAt: string
+  updatedAt: string
+}
+export interface CreatedUser { user: InternalUser; initialPassword: string }
 
 export interface Provider {
   id: string
@@ -33,7 +43,8 @@ export interface Message {
   promptTokens: number
   completionTokens: number
   latencyMs: number
-  status: 'completed' | 'failed'
+  status: 'completed' | 'failed' | 'stopped'
+  attachments?: string[]
   createdAt: string
 }
 
@@ -43,6 +54,7 @@ export interface Conversation {
   providerId: string
   model: string
   systemPrompt: string
+  reasoningEffort: ReasoningEffort
   pinned: boolean
   createdAt: string
   updatedAt: string
@@ -62,6 +74,9 @@ export interface Dashboard {
 
 export interface ProviderInput { name: string; baseUrl: string; defaultModel: string; apiKey: string; enabled?: boolean }
 export interface PromptInput { title: string; description: string; category: string; content: string; favorite?: boolean }
+export type ReasoningEffort = 'fast' | 'medium' | 'high'
+export interface AvailableModel { id: string; name: string; defaultModel: string }
+export interface Attachment { id: string; name: string; contentType: string; size: number; expiresAt: string }
 
 export interface NewsArticle {
   id: string

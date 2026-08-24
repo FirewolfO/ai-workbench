@@ -1,0 +1,43 @@
+name: ai-workbench
+
+services:
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      AI_WORKBENCH_ADDR: :8087
+      AI_WORKBENCH_DB_DSN: /data/ai-workbench.db
+      AI_WORKBENCH_ATTACHMENT_DIR: /data/attachments
+      AI_WORKBENCH_ALLOWED_ORIGINS: https://ai.lxvb.top
+      AI_WORKBENCH_ENCRYPTION_KEY: ${AI_WORKBENCH_ENCRYPTION_KEY:?set AI_WORKBENCH_ENCRYPTION_KEY}
+      AI_WORKBENCH_PERMISSION_API_BASE_URL: ${AI_WORKBENCH_PERMISSION_API_BASE_URL:-http://host.docker.internal:8081/api/v1}
+      AI_WORKBENCH_PEOPLE_API_BASE_URL: ${AI_WORKBENCH_PEOPLE_API_BASE_URL:-http://host.docker.internal:8082/api/open/people}
+      AI_WORKBENCH_PEOPLE_AUTHORIZE_URL: ${AI_WORKBENCH_PEOPLE_AUTHORIZE_URL:-http://10.251.237.216:5177/oauth/authorize}
+      AI_WORKBENCH_PEOPLE_CLIENT_ID: ${AI_WORKBENCH_PEOPLE_CLIENT_ID:-ai-workbench-ui}
+      AI_WORKBENCH_PEOPLE_CLIENT_SECRET: ${AI_WORKBENCH_PEOPLE_CLIENT_SECRET:?set AI_WORKBENCH_PEOPLE_CLIENT_SECRET}
+      AI_WORKBENCH_OAUTH_REDIRECT_URIS: https://ai.lxvb.top/oauth/callback
+      AI_WORKBENCH_X_BEARER_TOKEN: ${AI_WORKBENCH_X_BEARER_TOKEN:-}
+      AI_WORKBENCH_GITHUB_TOKEN: ${AI_WORKBENCH_GITHUB_TOKEN:-}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - workbench-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8087/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - 127.0.0.1:18082:8080
+
+volumes:
+  workbench-data:

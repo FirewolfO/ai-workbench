@@ -13,6 +13,13 @@ func TestCompleteOpenAICompatibleRequest(t *testing.T) {
 		if request.URL.Path != "/v1/chat/completions" || request.Header.Get("Authorization") != "Bearer secret" {
 			t.Fatalf("unexpected request %s, auth %q", request.URL.Path, request.Header.Get("Authorization"))
 		}
+		var input map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		if input["reasoning_effort"] != "high" {
+			t.Fatalf("reasoning_effort = %#v", input["reasoning_effort"])
+		}
 		writer.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(writer).Encode(map[string]any{
 			"model": "test-model", "choices": []any{map[string]any{"message": map[string]string{"role": "assistant", "content": "Hello"}}},
@@ -20,7 +27,7 @@ func TestCompleteOpenAICompatibleRequest(t *testing.T) {
 		})
 	}))
 	defer server.Close()
-	result, err := New().Complete(context.Background(), CompletionRequest{BaseURL: server.URL + "/v1", APIKey: "secret", Model: "test-model", Messages: []Message{{Role: "user", Content: "Hi"}}})
+	result, err := New().Complete(context.Background(), CompletionRequest{BaseURL: server.URL + "/v1", APIKey: "secret", Model: "test-model", ReasoningEffort: "high", Messages: []Message{{Role: "user", Content: "Hi"}}})
 	if err != nil || result.Content != "Hello" || result.PromptTokens != 4 || result.CompletionTokens != 2 {
 		t.Fatalf("Complete() = %#v, %v", result, err)
 	}

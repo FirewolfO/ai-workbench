@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 const conversation = {
-  id: 'cnv_demo', title: '发布方案评审', providerId: 'prv_demo', model: 'company-model', systemPrompt: '你是一名严谨的技术评审人。', pinned: true,
+  id: 'cnv_demo', title: '发布方案评审', providerId: 'prv_demo', model: 'company-model', systemPrompt: '你是一名严谨的技术评审人。', reasoningEffort: 'medium', pinned: true,
   createdAt: '2026-08-11T10:00:00Z', updatedAt: '2026-08-11T11:00:00Z', messageCount: 2, lastMessage: '建议先补齐回滚和监控方案。',
   messages: [
     { id: 'msg_1', conversationId: 'cnv_demo', role: 'user', content: '帮我评审这份发布方案。', promptTokens: 0, completionTokens: 0, latencyMs: 0, status: 'completed', createdAt: '2026-08-11T10:00:00Z' },
@@ -21,13 +21,13 @@ const frontier = {
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     sessionStorage.setItem('ai_workbench_access_token', 'visual-token')
-    sessionStorage.setItem('ai_workbench_session', JSON.stringify({ user: { id: 'alice', username: 'alice', displayName: 'Alice' }, expiresAt: '2099-01-01T00:00:00Z' }))
+    sessionStorage.setItem('ai_workbench_session', JSON.stringify({ user: { id: 'internal:alice', username: 'alice', displayName: 'Alice', source: 'internal', role: 'user' }, expiresAt: '2099-01-01T00:00:00Z' }))
   })
   await page.route('**/api/v1/**', async (route) => {
     const path = new URL(route.request().url()).pathname
     let data: unknown = null
-    if (path.endsWith('/auth/me')) data = { user: { id: 'alice', username: 'alice', displayName: 'Alice' } }
-    else if (path.endsWith('/providers')) data = [{ id: 'prv_demo', name: '企业模型', baseUrl: 'https://model.example.com/v1', defaultModel: 'company-model', enabled: true, hasApiKey: true, createdAt: '2026-08-11T09:00:00Z', updatedAt: '2026-08-11T09:00:00Z' }]
+    if (path.endsWith('/auth/me')) data = { user: { id: 'internal:alice', username: 'alice', displayName: 'Alice', source: 'internal', role: 'user' } }
+    else if (path.endsWith('/models')) data = [{ id: 'prv_demo', name: '企业模型', defaultModel: 'company-model' }]
     else if (path.endsWith('/prompts')) data = [{ id: 'pmt_demo', title: '技术评审', description: '评审技术方案', category: '研发', content: '请评审以下技术方案：', favorite: true, useCount: 8, createdAt: '2026-08-11T09:00:00Z', updatedAt: '2026-08-11T09:00:00Z' }]
     else if (path.endsWith('/conversations/cnv_demo')) data = conversation
     else if (path.endsWith('/conversations')) data = [conversation]
@@ -52,6 +52,10 @@ test('conversation workspace is usable without overflow', async ({ page }, testI
   await expect(page.getByRole('heading', { name: '发布方案评审' })).toBeVisible()
   await expect(page.getByPlaceholder('输入消息')).toBeVisible()
   await expect(page.getByText('评审结论')).toBeVisible()
+  await expect(page.getByRole('combobox', { name: '模型' })).toBeVisible()
+  await expect(page.getByText('中等', { exact: true })).toBeVisible()
+  await expect(page.getByText('模型连接', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('用户管理', { exact: true })).toHaveCount(0)
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
   expect(overflow).toBe(false)
   await page.screenshot({ path: `../.runtime/screenshots/chat-${testInfo.project.name}.png`, fullPage: true })

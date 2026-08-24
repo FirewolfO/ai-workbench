@@ -1,5 +1,5 @@
 import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios'
-import type { ContentStatus, Conversation, Dashboard, FrontierCategory, FrontierResult, Message, NewsResult, NewsSummaryResult, PeopleResult, Prompt, PromptInput, Provider, ProviderInput, Session, SocialPost, SyncState, TrackedPerson, User } from './types'
+import type { Attachment, AvailableModel, ContentStatus, Conversation, CreatedUser, Dashboard, FrontierCategory, FrontierResult, InternalUser, Message, NewsResult, NewsSummaryResult, PeopleResult, Prompt, PromptInput, Provider, ProviderInput, ReasoningEffort, Session, SocialPost, SyncState, TrackedPerson, User } from './types'
 
 interface Envelope<T> { code: string; message: string; data: T }
 interface RetryConfig extends InternalAxiosRequestConfig { _retry?: boolean }
@@ -15,7 +15,7 @@ api.interceptors.request.use((config) => {
 })
 api.interceptors.response.use((response) => response, (error: AxiosError<Envelope<unknown>>) => {
   const original = error.config as RetryConfig | undefined
-  if (error.response?.status === 401 && original && !original._retry && !original.url?.includes('/auth/oauth/')) {
+  if (error.response?.status === 401 && original && !original._retry && !original.url?.includes('/auth/')) {
     clearSession()
     window.location.assign(`/login?redirect=${encodeURIComponent(location.pathname + location.search)}`)
   }
@@ -38,9 +38,15 @@ export function clearSession() { sessionStorage.removeItem(accessTokenKey); sess
 export const workbenchApi = {
   oauthURL: (redirectUri: string) => unwrap<{ url: string }>(api.get('/auth/oauth/url', { params: { redirect_uri: redirectUri } })),
   oauthCallback: (code: string, state: string, redirectUri: string) => unwrap<Session>(api.post('/auth/oauth/callback', { code, state, redirectUri })),
+  internalLogin: (username: string, password: string) => unwrap<Session>(api.post('/auth/internal/login', { username, password })),
   me: () => unwrap<{ user: User }>(api.get('/auth/me')),
   logout: () => unwrap<{ loggedOut: boolean }>(api.post('/auth/logout')),
+  users: () => unwrap<InternalUser[]>(api.get('/admin/users')),
+  createUser: (input: { username: string; displayName: string; password?: string }) => unwrap<CreatedUser>(api.post('/admin/users', input)),
+  updateUser: (username: string, input: { displayName?: string; password?: string; enabled?: boolean }) => unwrap<InternalUser>(api.patch(`/admin/users/${encodeURIComponent(username)}`, input)),
+  deleteUser: (username: string) => unwrap<{ deleted: boolean }>(api.delete(`/admin/users/${encodeURIComponent(username)}`)),
   dashboard: () => unwrap<Dashboard>(api.get('/dashboard')),
+  models: () => unwrap<AvailableModel[]>(api.get('/models')),
   providers: () => unwrap<Provider[]>(api.get('/providers')),
   createProvider: (input: ProviderInput) => unwrap<Provider>(api.post('/providers', input)),
   updateProvider: (id: string, input: ProviderInput) => unwrap<Provider>(api.put(`/providers/${id}`, input)),
@@ -53,10 +59,17 @@ export const workbenchApi = {
   usePrompt: (id: string) => unwrap<Prompt>(api.post(`/prompts/${id}/use`)),
   conversations: (search = '') => unwrap<Conversation[]>(api.get('/conversations', { params: { search } })),
   conversation: (id: string) => unwrap<Conversation>(api.get(`/conversations/${id}`)),
-  createConversation: (input: { title?: string; providerId: string; model?: string; systemPrompt?: string }) => unwrap<Conversation>(api.post('/conversations', input)),
-  updateConversation: (id: string, input: Partial<Pick<Conversation, 'title' | 'providerId' | 'model' | 'systemPrompt' | 'pinned'>>) => unwrap<Conversation>(api.patch(`/conversations/${id}`, input)),
+  createConversation: (input: { title?: string; providerId?: string; model?: string; systemPrompt?: string; reasoningEffort?: ReasoningEffort } = {}) => unwrap<Conversation>(api.post('/conversations', input)),
+  updateConversation: (id: string, input: Partial<Pick<Conversation, 'title' | 'providerId' | 'model' | 'systemPrompt' | 'pinned' | 'reasoningEffort'>>) => unwrap<Conversation>(api.patch(`/conversations/${id}`, input)),
   deleteConversation: (id: string) => unwrap<{ deleted: boolean }>(api.delete(`/conversations/${id}`)),
-  sendMessage: (id: string, content: string) => unwrap<Message>(api.post(`/conversations/${id}/messages`, { content })),
+  sendMessage: (id: string, content: string, attachmentIds: string[] = []) => unwrap<Message>(api.post(`/conversations/${id}/messages`, { content, attachmentIds })),
+  stopGeneration: (id: string) => unwrap<{ stopped: boolean }>(api.post(`/conversations/${id}/stop`)),
+  uploadAttachment: (file: File) => {
+    const data = new FormData()
+    data.append('file', file)
+    return unwrap<Attachment>(api.post('/attachments', data))
+  },
+  deleteAttachment: (id: string) => unwrap<{ deleted: boolean }>(api.delete(`/attachments/${id}`)),
   contentStatus: () => unwrap<ContentStatus>(api.get('/content/status')),
   news: (search = '', source = '', favorite = false) => unwrap<NewsResult>(api.get('/news', { params: { search, source, favorite } })),
   refreshNews: () => unwrap<SyncState>(api.post('/news/refresh')),

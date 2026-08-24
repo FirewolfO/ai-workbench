@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -18,7 +19,12 @@ import (
 type authenticator interface {
 	AuthorizationURL(string) (string, error)
 	Exchange(context.Context, string, string, string) (*identity.SessionResult, error)
+	InternalLogin(context.Context, string, string) (*identity.SessionResult, error)
 	Authenticate(context.Context, string) (*identity.Actor, error)
+	Users(identity.Actor) ([]identity.InternalUserView, error)
+	CreateUser(identity.Actor, identity.UserInput) (*identity.CreatedUser, error)
+	UpdateUser(identity.Actor, string, identity.UserPatch) (*identity.InternalUserView, error)
+	DeleteUser(identity.Actor, string) error
 	Logout(string) error
 }
 
@@ -42,9 +48,15 @@ func New(address string, allowedOrigins []string, auth authenticator, service *w
 	mux.HandleFunc("GET /health", server.health)
 	mux.HandleFunc("GET /api/v1/auth/oauth/url", server.oauthURL)
 	mux.HandleFunc("POST /api/v1/auth/oauth/callback", server.oauthCallback)
+	mux.HandleFunc("POST /api/v1/auth/internal/login", server.internalLogin)
 	mux.Handle("GET /api/v1/auth/me", server.requireAuth(http.HandlerFunc(server.me)))
 	mux.Handle("POST /api/v1/auth/logout", server.requireAuth(http.HandlerFunc(server.logout)))
+	mux.Handle("GET /api/v1/admin/users", server.requireAuth(http.HandlerFunc(server.users)))
+	mux.Handle("POST /api/v1/admin/users", server.requireAuth(http.HandlerFunc(server.createUser)))
+	mux.Handle("PATCH /api/v1/admin/users/{username}", server.requireAuth(http.HandlerFunc(server.updateUser)))
+	mux.Handle("DELETE /api/v1/admin/users/{username}", server.requireAuth(http.HandlerFunc(server.deleteUser)))
 	mux.Handle("GET /api/v1/dashboard", server.requireAuth(http.HandlerFunc(server.dashboard)))
+	mux.Handle("GET /api/v1/models", server.requireAuth(http.HandlerFunc(server.models)))
 	mux.Handle("GET /api/v1/providers", server.requireAuth(http.HandlerFunc(server.providers)))
 	mux.Handle("POST /api/v1/providers", server.requireAuth(http.HandlerFunc(server.createProvider)))
 	mux.Handle("PUT /api/v1/providers/{id}", server.requireAuth(http.HandlerFunc(server.updateProvider)))
@@ -61,6 +73,9 @@ func New(address string, allowedOrigins []string, auth authenticator, service *w
 	mux.Handle("PATCH /api/v1/conversations/{id}", server.requireAuth(http.HandlerFunc(server.updateConversation)))
 	mux.Handle("DELETE /api/v1/conversations/{id}", server.requireAuth(http.HandlerFunc(server.deleteConversation)))
 	mux.Handle("POST /api/v1/conversations/{id}/messages", server.requireAuth(http.HandlerFunc(server.sendMessage)))
+	mux.Handle("POST /api/v1/conversations/{id}/stop", server.requireAuth(http.HandlerFunc(server.stopGeneration)))
+	mux.Handle("POST /api/v1/attachments", server.requireAuth(http.HandlerFunc(server.createAttachment)))
+	mux.Handle("DELETE /api/v1/attachments/{id}", server.requireAuth(http.HandlerFunc(server.deleteAttachment)))
 	mux.Handle("GET /api/v1/content/status", server.requireAuth(http.HandlerFunc(server.contentStatus)))
 	mux.Handle("GET /api/v1/news", server.requireAuth(http.HandlerFunc(server.news)))
 	mux.Handle("POST /api/v1/news/refresh", server.requireAuth(http.HandlerFunc(server.refreshNews)))
@@ -138,6 +153,26 @@ func (s *Server) oauthCallback(writer http.ResponseWriter, request *http.Request
 	write(writer, http.StatusOK, result)
 }
 
+func (s *Server) internalLogin(writer http.ResponseWriter, request *http.Request) {
+	var input struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if !decode(writer, request, &input) {
+		return
+	}
+	result, err := s.auth.InternalLogin(request.Context(), input.Username, input.Password)
+	if err != nil {
+		if errors.Is(err, identity.ErrUnauthorized) {
+			fail(writer, http.StatusUnauthorized, "INVALID_CREDENTIALS", "用户名或密码错误")
+			return
+		}
+		failError(writer, err)
+		return
+	}
+	write(writer, http.StatusOK, result)
+}
+
 func (s *Server) me(writer http.ResponseWriter, request *http.Request) {
 	write(writer, http.StatusOK, map[string]any{"user": actor(request)})
 }
@@ -150,8 +185,41 @@ func (s *Server) logout(writer http.ResponseWriter, request *http.Request) {
 	write(writer, http.StatusOK, map[string]bool{"loggedOut": true})
 }
 
+func (s *Server) users(writer http.ResponseWriter, request *http.Request) {
+	result, err := s.auth.Users(actor(request))
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) createUser(writer http.ResponseWriter, request *http.Request) {
+	var input identity.UserInput
+	if !decode(writer, request, &input) {
+		return
+	}
+	result, err := s.auth.CreateUser(actor(request), input)
+	respond(writer, result, err, http.StatusCreated)
+}
+
+func (s *Server) updateUser(writer http.ResponseWriter, request *http.Request) {
+	var input identity.UserPatch
+	if !decode(writer, request, &input) {
+		return
+	}
+	result, err := s.auth.UpdateUser(actor(request), request.PathValue("username"), input)
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) deleteUser(writer http.ResponseWriter, request *http.Request) {
+	err := s.auth.DeleteUser(actor(request), request.PathValue("username"))
+	respond(writer, map[string]bool{"deleted": err == nil}, err, http.StatusOK)
+}
+
 func (s *Server) dashboard(writer http.ResponseWriter, request *http.Request) {
 	result, err := s.workbench.Dashboard(actor(request))
+	respond(writer, result, err, http.StatusOK)
+}
+
+func (s *Server) models(writer http.ResponseWriter, request *http.Request) {
+	result, err := s.workbench.AvailableModels(actor(request))
 	respond(writer, result, err, http.StatusOK)
 }
 
@@ -255,14 +323,43 @@ func (s *Server) deleteConversation(writer http.ResponseWriter, request *http.Re
 }
 
 func (s *Server) sendMessage(writer http.ResponseWriter, request *http.Request) {
-	var input struct {
-		Content string `json:"content"`
-	}
+	var input workbench.MessageInput
 	if !decode(writer, request, &input) {
 		return
 	}
-	result, err := s.workbench.SendMessage(request.Context(), actor(request), request.PathValue("id"), input.Content)
+	result, err := s.workbench.SendMessage(request.Context(), actor(request), request.PathValue("id"), input)
 	respond(writer, result, err, http.StatusCreated)
+}
+
+func (s *Server) stopGeneration(writer http.ResponseWriter, request *http.Request) {
+	stopped, err := s.workbench.StopGeneration(actor(request), request.PathValue("id"))
+	respond(writer, map[string]bool{"stopped": stopped}, err, http.StatusOK)
+}
+
+func (s *Server) createAttachment(writer http.ResponseWriter, request *http.Request) {
+	request.Body = http.MaxBytesReader(writer, request.Body, (8<<20)+(1<<20))
+	if err := request.ParseMultipartForm(8 << 20); err != nil {
+		fail(writer, http.StatusBadRequest, "INVALID_ATTACHMENT", "附件无效或超过 8 MiB")
+		return
+	}
+	file, header, err := request.FormFile("file")
+	if err != nil {
+		fail(writer, http.StatusBadRequest, "INVALID_ATTACHMENT", "请选择要上传的附件")
+		return
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, (8<<20)+1))
+	if err != nil || len(data) > 8<<20 {
+		fail(writer, http.StatusBadRequest, "INVALID_ATTACHMENT", "附件无效或超过 8 MiB")
+		return
+	}
+	result, err := s.workbench.CreateAttachment(actor(request), header.Filename, header.Header.Get("Content-Type"), data)
+	respond(writer, result, err, http.StatusCreated)
+}
+
+func (s *Server) deleteAttachment(writer http.ResponseWriter, request *http.Request) {
+	err := s.workbench.DeleteAttachment(actor(request), request.PathValue("id"))
+	respond(writer, map[string]bool{"deleted": err == nil}, err, http.StatusOK)
 }
 
 func (s *Server) contentStatus(writer http.ResponseWriter, request *http.Request) {
@@ -388,6 +485,16 @@ func respond(writer http.ResponseWriter, data any, err error, successStatus int)
 
 func failError(writer http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, identity.ErrUnauthorized):
+		fail(writer, http.StatusUnauthorized, "UNAUTHORIZED", "登录已过期，请重新登录")
+	case errors.Is(err, identity.ErrForbidden), errors.Is(err, workbench.ErrForbidden):
+		fail(writer, http.StatusForbidden, "FORBIDDEN", "当前账号没有权限执行此操作")
+	case errors.Is(err, identity.ErrInvalid):
+		fail(writer, http.StatusBadRequest, "INVALID_REQUEST", "账号信息或密码格式无效")
+	case errors.Is(err, identity.ErrNotFound):
+		fail(writer, http.StatusNotFound, "NOT_FOUND", "用户不存在")
+	case errors.Is(err, identity.ErrConflict):
+		fail(writer, http.StatusConflict, "USER_CONFLICT", "用户名已存在或管理员账号不能执行此操作")
 	case errors.Is(err, content.ErrInvalid):
 		fail(writer, http.StatusBadRequest, "INVALID_REQUEST", "X 用户名格式无效或已关注")
 	case errors.Is(err, content.ErrNotFound):
@@ -407,7 +514,9 @@ func failError(writer http.ResponseWriter, err error) {
 	case errors.Is(err, workbench.ErrNotFound):
 		fail(writer, http.StatusNotFound, "NOT_FOUND", "资源不存在")
 	case errors.Is(err, workbench.ErrConflict):
-		fail(writer, http.StatusConflict, "RESOURCE_IN_USE", "模型连接仍被对话使用")
+		fail(writer, http.StatusConflict, "RESOURCE_CONFLICT", "资源正在使用或已有生成任务正在运行")
+	case errors.Is(err, workbench.ErrCanceled):
+		fail(writer, http.StatusConflict, "GENERATION_STOPPED", "生成已停止")
 	case errors.Is(err, workbench.ErrProvider):
 		fail(writer, http.StatusBadGateway, "MODEL_UNAVAILABLE", strings.TrimPrefix(err.Error(), workbench.ErrProvider.Error()+": "))
 	case errors.Is(err, workbench.ErrNoProvider):

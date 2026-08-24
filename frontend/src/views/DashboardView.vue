@@ -4,9 +4,11 @@ import { useRouter } from 'vue-router'
 import { ChatLineRound, Connection, MagicStick, Tickets } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { apiMessage, workbenchApi } from '@/api'
+import { useAuthStore } from '@/stores/auth'
 import type { Dashboard } from '@/types'
 
 const router = useRouter()
+const auth = useAuthStore()
 const loading = ref(true)
 const dashboard = ref<Dashboard | null>(null)
 const metrics = [
@@ -27,7 +29,7 @@ const relative = (value: string) => new Intl.RelativeTimeFormat('zh-CN', { numer
   <section v-loading="loading" class="page dashboard-page">
     <div class="page-heading"><div><p>PERSONAL OVERVIEW</p><h2>用量概览</h2></div><el-button type="primary" :icon="ChatLineRound" @click="router.push('/chat')">开始对话</el-button></div>
     <div v-if="dashboard" class="metric-grid">
-      <div v-for="metric in metrics" :key="metric.key" class="metric-item"><el-icon><component :is="metric.icon" /></el-icon><span>{{ metric.label }}</span><strong>{{ dashboard[metric.key].toLocaleString() }}</strong></div>
+      <div v-for="metric in metrics.filter((item) => item.key !== 'providerCount' || auth.isAdmin)" :key="metric.key" class="metric-item"><el-icon><component :is="metric.icon" /></el-icon><span>{{ metric.label }}</span><strong>{{ dashboard[metric.key].toLocaleString() }}</strong></div>
       <div class="metric-item token-metric"><el-icon><Tickets /></el-icon><span>累计 Token</span><strong>{{ dashboard.totalTokens.toLocaleString() }}</strong></div>
     </div>
     <div class="section-heading"><div><h3>最近对话</h3><p>继续上次的工作</p></div><el-button text @click="router.push('/chat')">查看全部</el-button></div>

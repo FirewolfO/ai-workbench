@@ -3,6 +3,7 @@ package workbench
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -37,7 +38,7 @@ func testServiceWithModels(t *testing.T, models llm.Client) *Service {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(database, vault, models)
+	return New(database, vault, models, t.TempDir())
 }
 
 type summaryModels struct{}
@@ -51,17 +52,18 @@ func (summaryModels) Test(context.Context, string, string, string) (time.Duratio
 
 func TestPersonalDataIsolationAndChat(t *testing.T) {
 	service := testService(t)
-	alice := identity.Actor{Username: "alice"}
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
 	bob := identity.Actor{Username: "bob"}
-	provider, err := service.CreateProvider(alice, ProviderInput{Name: "Local", BaseURL: "http://localhost:11434/v1", DefaultModel: "model", APIKey: "secret"})
+	provider, err := service.CreateProvider(admin, ProviderInput{Name: "Local", BaseURL: "http://localhost:11434/v1", DefaultModel: "model", APIKey: "secret"})
 	if err != nil || !provider.HasAPIKey || provider.APIKeyCiphertext == "secret" {
 		t.Fatalf("CreateProvider() = %#v, %v", provider, err)
 	}
-	conversation, err := service.CreateConversation(alice, ConversationInput{ProviderID: provider.ID})
+	conversation, err := service.CreateConversation(alice, ConversationInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	answer, err := service.SendMessage(context.Background(), alice, conversation.ID, "你好")
+	answer, err := service.SendMessage(context.Background(), alice, conversation.ID, MessageInput{Content: "你好"})
 	if err != nil || answer.Content != "回答" || answer.PromptTokens != 8 {
 		t.Fatalf("SendMessage() = %#v, %v", answer, err)
 	}
@@ -80,10 +82,11 @@ func TestPersonalDataIsolationAndChat(t *testing.T) {
 
 func TestPromptLifecycleAndProviderConflict(t *testing.T) {
 	service := testService(t)
-	actor := identity.Actor{Username: "alice"}
-	provider, _ := service.CreateProvider(actor, ProviderInput{Name: "Local", BaseURL: "http://localhost/v1", DefaultModel: "model"})
-	_, _ = service.CreateConversation(actor, ConversationInput{ProviderID: provider.ID})
-	if err := service.DeleteProvider(actor, provider.ID); !containsError(err, ErrConflict) {
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	actor := identity.Actor{Username: "alice", Role: identity.RoleUser}
+	provider, _ := service.CreateProvider(admin, ProviderInput{Name: "Local", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	_, _ = service.CreateConversation(actor, ConversationInput{})
+	if err := service.DeleteProvider(admin, provider.ID); !containsError(err, ErrConflict) {
 		t.Fatalf("DeleteProvider() error = %v", err)
 	}
 	prompt, err := service.CreatePrompt(actor, PromptInput{Title: "总结", Content: "总结以下内容"})
@@ -98,8 +101,9 @@ func TestPromptLifecycleAndProviderConflict(t *testing.T) {
 
 func TestSummarizeNewsUsesOwnedProviderAndCachesResult(t *testing.T) {
 	service := testServiceWithModels(t, summaryModels{})
-	actor := identity.Actor{ID: "alice", Username: "alice"}
-	if _, err := service.CreateProvider(actor, ProviderInput{Name: "Local", BaseURL: "http://localhost/v1", DefaultModel: "model"}); err != nil {
+	admin := identity.Actor{ID: "admin", Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	actor := identity.Actor{ID: "alice", Username: "alice", Role: identity.RoleUser}
+	if _, err := service.CreateProvider(admin, ProviderInput{Name: "Local", BaseURL: "http://localhost/v1", DefaultModel: "model"}); err != nil {
 		t.Fatal(err)
 	}
 	article := model.NewsArticle{ID: "news_one", SourceCode: "test", SourceName: "Test", Title: "Agent release", Summary: "An agent was released.", URL: "https://example.com/agent", PublishedAt: time.Now(), FetchedAt: time.Now()}
@@ -120,6 +124,137 @@ func TestSummarizeNewsUsesOwnedProviderAndCachesResult(t *testing.T) {
 	again, err := service.SummarizeNews(context.Background(), actor, []string{article.ID})
 	if err != nil || again.Generated != 0 {
 		t.Fatalf("cached summary should not be regenerated: %#v, %v", again, err)
+	}
+}
+
+func TestAdminDashboardAggregatesAllUsersAndProvidersAreAdminOnly(t *testing.T) {
+	service := testService(t)
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
+	bob := identity.Actor{Username: "bob", Role: identity.RoleUser}
+	provider, err := service.CreateProvider(admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Providers(alice); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("ordinary user providers error = %v", err)
+	}
+	available, err := service.AvailableModels(alice)
+	if err != nil || len(available) != 1 || available[0].ID != provider.ID {
+		t.Fatalf("AvailableModels() = %#v, %v", available, err)
+	}
+	for _, actor := range []identity.Actor{alice, bob} {
+		conversation, err := service.CreateConversation(actor, ConversationInput{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.SendMessage(context.Background(), actor, conversation.ID, MessageInput{Content: "hello"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	aliceDashboard, _ := service.Dashboard(alice)
+	adminDashboard, _ := service.Dashboard(admin)
+	if aliceDashboard.ConversationCount != 1 || aliceDashboard.TotalTokens != 11 {
+		t.Fatalf("alice dashboard = %#v", aliceDashboard)
+	}
+	if adminDashboard.ConversationCount != 2 || adminDashboard.MessageCount != 4 || adminDashboard.TotalTokens != 22 || adminDashboard.ProviderCount != 1 {
+		t.Fatalf("admin dashboard = %#v", adminDashboard)
+	}
+}
+
+type captureModels struct{ request llm.CompletionRequest }
+
+func (models *captureModels) Complete(_ context.Context, request llm.CompletionRequest) (*llm.CompletionResult, error) {
+	models.request = request
+	return &llm.CompletionResult{Content: "done", Model: request.Model}, nil
+}
+func (*captureModels) Test(context.Context, string, string, string) (time.Duration, error) {
+	return 0, nil
+}
+
+func TestAttachmentIsConsumedAndDeletedAfterMessage(t *testing.T) {
+	models := &captureModels{}
+	service := testServiceWithModels(t, models)
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
+	_, _ = service.CreateProvider(admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	conversation, _ := service.CreateConversation(alice, ConversationInput{ReasoningEffort: "high"})
+	attachment, err := service.CreateAttachment(alice, "notes.txt", "text/plain", []byte("release checklist"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(attachment.Path); err != nil {
+		t.Fatal(err)
+	}
+	message, err := service.SendMessage(context.Background(), alice, conversation.ID, MessageInput{Content: "review", AttachmentIDs: []string{attachment.ID}})
+	if err != nil || len(message.Attachments) != 0 {
+		t.Fatalf("SendMessage() = %#v, %v", message, err)
+	}
+	if models.request.ReasoningEffort != "high" {
+		t.Fatalf("reasoning effort = %q", models.request.ReasoningEffort)
+	}
+	if _, err := os.Stat(attachment.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("used attachment was not deleted: %v", err)
+	}
+	var count int64
+	if err := service.database.DB.Model(&model.Attachment{}).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("attachment rows = %d, %v", count, err)
+	}
+	loaded, _ := service.Conversation(alice, conversation.ID)
+	if len(loaded.Messages) != 2 || len(loaded.Messages[0].Attachments) != 1 || loaded.Messages[0].Attachments[0] != "notes.txt" {
+		t.Fatalf("stored attachment metadata = %#v", loaded.Messages)
+	}
+}
+
+type blockingModels struct{ started chan struct{} }
+
+func (models *blockingModels) Complete(ctx context.Context, _ llm.CompletionRequest) (*llm.CompletionResult, error) {
+	close(models.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (*blockingModels) Test(context.Context, string, string, string) (time.Duration, error) {
+	return 0, nil
+}
+
+func TestStopGeneration(t *testing.T) {
+	models := &blockingModels{started: make(chan struct{})}
+	service := testServiceWithModels(t, models)
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
+	_, _ = service.CreateProvider(admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	conversation, _ := service.CreateConversation(alice, ConversationInput{})
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.SendMessage(context.Background(), alice, conversation.ID, MessageInput{Content: "think"})
+		result <- err
+	}()
+	<-models.started
+	stopped, err := service.StopGeneration(alice, conversation.ID)
+	if err != nil || !stopped {
+		t.Fatalf("StopGeneration() = %v, %v", stopped, err)
+	}
+	if err := <-result; !errors.Is(err, ErrCanceled) {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	loaded, _ := service.Conversation(alice, conversation.ID)
+	if loaded.Messages[len(loaded.Messages)-1].Status != "stopped" {
+		t.Fatalf("last message = %#v", loaded.Messages[len(loaded.Messages)-1])
+	}
+}
+
+func TestConversationRejectsInvalidReasoningEffort(t *testing.T) {
+	service := testService(t)
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
+	_, _ = service.CreateProvider(admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	conversation, err := service.CreateConversation(alice, ConversationInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := "unlimited"
+	if _, err := service.UpdateConversation(alice, conversation.ID, ConversationPatch{ReasoningEffort: &invalid}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("UpdateConversation() error = %v", err)
 	}
 }
 

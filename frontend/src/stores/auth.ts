@@ -8,6 +8,7 @@ export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(cached?.user || null)
   const initialized = ref(false)
   const authenticated = computed(() => Boolean(user.value))
+  const isAdmin = computed(() => user.value?.source === 'internal' && user.value?.role === 'admin')
 
   async function hydrate() {
     if (initialized.value) return
@@ -22,8 +23,14 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = session.user
     initialized.value = true
   }
+  async function loginInternal(username: string, password: string) {
+    const session = await workbenchApi.internalLogin(username, password)
+    saveSession(session)
+    user.value = session.user
+    initialized.value = true
+  }
   async function logout() {
     try { await workbenchApi.logout() } finally { clearSession(); user.value = null }
   }
-  return { user, initialized, authenticated, hydrate, completeOAuth, logout }
+  return { user, initialized, authenticated, isAdmin, hydrate, completeOAuth, loginInternal, logout }
 })

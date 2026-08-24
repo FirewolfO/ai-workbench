@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="workbench_green">#176B55</color>
+    <color name="workbench_dark_green">#16352F</color>
+    <color name="workbench_white">#FFFFFF</color>
+</resources>

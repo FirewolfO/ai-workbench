@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AI Workbench</string>
+    <string name="download_started">下载已开始</string>
+    <string name="download_failed">无法开始下载</string>
+    <string name="file_picker_missing">没有可用的文件选择器</string>
+    <string name="link_failed">无法打开链接</string>
+    <string name="unsafe_page">已阻止不安全的页面</string>
+</resources>

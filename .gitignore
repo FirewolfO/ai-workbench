@@ -6,6 +6,9 @@ frontend/dist/
 frontend/node_modules/
 frontend/test-results/
 frontend/playwright-report/
+android/.gradle/
+android/local.properties
+android/**/build/
 *.log
 *.pid
 .env

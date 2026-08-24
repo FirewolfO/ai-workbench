@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChatLineRound, Compass, Connection, DataAnalysis, Expand, MagicStick, Menu as MenuIcon, SwitchButton, TrendCharts, UserFilled } from '@element-plus/icons-vue'
+import { ChatLineRound, Compass, Connection, DataAnalysis, Expand, MagicStick, Menu as MenuIcon, SwitchButton, TrendCharts, User, UserFilled } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
@@ -9,15 +9,15 @@ const router = useRouter()
 const auth = useAuthStore()
 const drawerOpen = ref(false)
 const pageTitle = computed(() => String(route.meta.title || 'AI 工作台'))
-const items = [
+const items = computed(() => [
   { path: '/chat', label: '对话', icon: ChatLineRound },
   { path: '/news', label: 'AI 热点', icon: TrendCharts },
   { path: '/frontier', label: '前沿项目', icon: Compass },
   { path: '/people', label: '大佬动态', icon: UserFilled },
   { path: '/prompts', label: '提示词', icon: MagicStick },
-  { path: '/providers', label: '模型连接', icon: Connection },
+  ...(auth.isAdmin ? [{ path: '/providers', label: '模型连接', icon: Connection }, { path: '/users', label: '用户管理', icon: User }] : []),
   { path: '/dashboard', label: '用量概览', icon: DataAnalysis },
-]
+])
 
 async function logout() { await auth.logout(); await router.replace('/login') }
 </script>
@@ -29,7 +29,7 @@ async function logout() { await auth.logout(); await router.replace('/login') }
       <el-menu :default-active="route.path.startsWith('/chat') ? '/chat' : route.path" router class="nav-menu">
         <el-menu-item v-for="item in items" :key="item.path" :index="item.path"><el-icon><component :is="item.icon" /></el-icon><span>{{ item.label }}</span></el-menu-item>
       </el-menu>
-      <div class="sidebar-status"><span></span>People SSO</div>
+      <div class="sidebar-status"><span></span>{{ auth.user?.source === 'internal' ? '内部账号' : 'People SSO' }}</div>
     </aside>
     <el-drawer v-model="drawerOpen" direction="ltr" :with-header="false" size="248px">
       <aside class="app-sidebar drawer-sidebar">

@@ -29,18 +29,19 @@ type Prompt struct {
 }
 
 type Conversation struct {
-	ID           string    `gorm:"primaryKey;size:40" json:"id"`
-	OwnerID      string    `gorm:"size:100;index;not null" json:"-"`
-	Title        string    `gorm:"size:160;not null" json:"title"`
-	ProviderID   string    `gorm:"size:40;index;not null" json:"providerId"`
-	Model        string    `gorm:"size:160;not null" json:"model"`
-	SystemPrompt string    `gorm:"type:text" json:"systemPrompt"`
-	Pinned       bool      `gorm:"not null;default:false;index" json:"pinned"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
-	Messages     []Message `gorm:"foreignKey:ConversationID;constraint:OnDelete:CASCADE" json:"messages,omitempty"`
-	MessageCount int64     `gorm:"-" json:"messageCount"`
-	LastMessage  string    `gorm:"-" json:"lastMessage,omitempty"`
+	ID              string    `gorm:"primaryKey;size:40" json:"id"`
+	OwnerID         string    `gorm:"size:100;index;not null" json:"-"`
+	Title           string    `gorm:"size:160;not null" json:"title"`
+	ProviderID      string    `gorm:"size:40;index;not null" json:"providerId"`
+	Model           string    `gorm:"size:160;not null" json:"model"`
+	SystemPrompt    string    `gorm:"type:text" json:"systemPrompt"`
+	ReasoningEffort string    `gorm:"size:12;not null;default:medium" json:"reasoningEffort"`
+	Pinned          bool      `gorm:"not null;default:false;index" json:"pinned"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+	Messages        []Message `gorm:"foreignKey:ConversationID;constraint:OnDelete:CASCADE" json:"messages,omitempty"`
+	MessageCount    int64     `gorm:"-" json:"messageCount"`
+	LastMessage     string    `gorm:"-" json:"lastMessage,omitempty"`
 }
 
 type Message struct {
@@ -53,6 +54,8 @@ type Message struct {
 	CompletionTokens int       `gorm:"not null;default:0" json:"completionTokens"`
 	LatencyMs        int64     `gorm:"not null;default:0" json:"latencyMs"`
 	Status           string    `gorm:"size:20;not null;default:completed" json:"status"`
+	AttachmentNames  string    `gorm:"type:text" json:"-"`
+	Attachments      []string  `gorm:"-" json:"attachments,omitempty"`
 	CreatedAt        time.Time `gorm:"index" json:"createdAt"`
 }
 
@@ -61,8 +64,31 @@ type Session struct {
 	TokenHash   string    `gorm:"size:64;uniqueIndex;not null"`
 	Username    string    `gorm:"size:100;index;not null"`
 	DisplayName string    `gorm:"size:120;not null"`
+	Source      string    `gorm:"size:20;not null;default:people"`
+	Role        string    `gorm:"size:20;not null;default:user"`
 	ExpiresAt   time.Time `gorm:"index;not null"`
 	CreatedAt   time.Time
+}
+
+type InternalUser struct {
+	Username     string    `gorm:"primaryKey;size:40" json:"username"`
+	DisplayName  string    `gorm:"size:120;not null" json:"displayName"`
+	PasswordHash string    `gorm:"size:100;not null" json:"-"`
+	Role         string    `gorm:"size:20;not null;default:user" json:"role"`
+	Enabled      bool      `gorm:"not null;default:true" json:"enabled"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
+type Attachment struct {
+	ID          string    `gorm:"primaryKey;size:40" json:"id"`
+	OwnerID     string    `gorm:"size:120;index;not null" json:"-"`
+	Name        string    `gorm:"size:255;not null" json:"name"`
+	ContentType string    `gorm:"size:120;not null" json:"contentType"`
+	Path        string    `gorm:"size:1000;not null" json:"-"`
+	Size        int64     `gorm:"not null" json:"size"`
+	ExpiresAt   time.Time `gorm:"index;not null" json:"expiresAt"`
+	CreatedAt   time.Time `json:"createdAt"`
 }
 
 type OAuthState struct {

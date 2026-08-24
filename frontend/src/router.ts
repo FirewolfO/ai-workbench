@@ -2,7 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
 declare module 'vue-router' {
-  interface RouteMeta { title?: string; public?: boolean }
+  interface RouteMeta { title?: string; public?: boolean; admin?: boolean }
 }
 
 const router = createRouter({
@@ -17,7 +17,8 @@ const router = createRouter({
         { path: 'dashboard', name: 'dashboard', component: () => import('@/views/DashboardView.vue'), meta: { title: '概览' } },
         { path: 'chat/:id?', name: 'chat', component: () => import('@/views/ChatView.vue'), meta: { title: '对话' } },
         { path: 'prompts', name: 'prompts', component: () => import('@/views/PromptsView.vue'), meta: { title: '提示词' } },
-        { path: 'providers', name: 'providers', component: () => import('@/views/ProvidersView.vue'), meta: { title: '模型连接' } },
+        { path: 'providers', name: 'providers', component: () => import('@/views/ProvidersView.vue'), meta: { title: '模型连接', admin: true } },
+        { path: 'users', name: 'users', component: () => import('@/views/UsersView.vue'), meta: { title: '用户管理', admin: true } },
         { path: 'news', name: 'news', component: () => import('@/views/NewsView.vue'), meta: { title: 'AI 热点' } },
         { path: 'people', name: 'people', component: () => import('@/views/PeopleView.vue'), meta: { title: '大佬动态' } },
         { path: 'frontier', name: 'frontier', component: () => import('@/views/FrontierView.vue'), meta: { title: '前沿项目' } },
@@ -33,6 +34,7 @@ router.beforeEach(async (to) => {
   await auth.hydrate()
   if (to.meta.public) return auth.authenticated && to.name === 'login' ? '/chat' : true
   if (!auth.authenticated) return { name: 'login', query: { redirect: to.fullPath } }
+  if (to.meta.admin && !auth.isAdmin) return '/chat'
   return true
 })
 

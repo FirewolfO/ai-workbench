@@ -71,6 +71,17 @@ curl http://127.0.0.1:18082/health
 
 当前生产入口为 `https://ai.lxvb.top`，Cloudflare Tunnel 源站指向 `http://127.0.0.1:18082`。该入口与 terminal、iStore Admin、SSH 和 IM 使用不同主机名及端口，部署不需要修改它们的现有路由。
 
+生产宿主机无法直接路由到内网模型网关时，使用 `deploy/systemd/ai-workbench-model-tunnel.service` 在内网开发机上建立 SSH 反向隧道。Compose 中的 `model-relay` 只监听生产宿主机 Docker 网桥 `172.17.0.1:18081`，将后端容器的请求转到远端回环端口 `127.0.0.1:19080`；模型连接的 Base URL 填写 `http://host.docker.internal:18081/v1`。安装并启动隧道：
+
+```bash
+install -Dm644 deploy/systemd/ai-workbench-model-tunnel.service \
+  ~/.config/systemd/user/ai-workbench-model-tunnel.service
+systemctl --user daemon-reload
+systemctl --user enable --now ai-workbench-model-tunnel.service
+```
+
+该服务依赖 `~/.ssh/config` 中可用的 `lxvb` 主机别名，并将内网 `10.251.239.186:8081` 映射到生产宿主机。部署前应确认生产 Docker 网桥仍使用 `172.17.0.1`；若地址变化，需要同步修改 `deploy/nginx/model-relay.conf`。
+
 需要提供 APK 等静态下载文件时，将文件放入仓库根目录的 `downloads/`。Compose 会将该目录只读挂载到前端容器，可通过 `https://ai.lxvb.top/downloads/<文件名>` 下载；APK 构建产物不会提交到 Git。
 
 ## Android 客户端

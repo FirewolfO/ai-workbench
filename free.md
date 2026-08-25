@@ -4,8 +4,8 @@
 
 ## 当前结论
 
-- 现有 `chatgpt` 连接已从 AI Workbench 后端完成模型列表和对话实测，可以继续作为主连接。
-- 现有 `chatgpt-a` 的域名已无 DNS 记录，后端、宿主机和公共 DNS 都无法解析。该问题不能靠修改容器 DNS 修复，应替换服务地址或停用此连接。
+- 原 `chatgpt` 公网地址 `https://pro.llmcrowd.shop` 已无 DNS 记录，不能靠修改容器 DNS 修复。生产连接已改为通过 SSH 反向隧道访问内网模型网关，Base URL 为 `http://host.docker.internal:18081/v1`。
+- `deepseek` 的网络和鉴权可达，但当前实测返回余额不足，保持“连接失败”，不进入聊天模型列表。
 - 推荐新增 Groq 作为免费主备，Google Gemini 作为第二主备，OpenRouter 免费路由作为低频兜底。
 - “启用”只表示管理员允许使用；只有“测试连接”成功的连接才会标记为“可使用”并出现在聊天模型列表中。
 
@@ -23,11 +23,11 @@
 
 ## 推荐落地顺序
 
-1. 保留已经实测可用的内部 `chatgpt` 连接。
+1. 保留通过生产隧道实测可用的内部 `chatgpt` 连接，并监控隧道 systemd 服务状态。
 2. 注册 Groq，创建 API Key，按表格填写连接后点击“测试连接”。成功后应显示“可使用”。
 3. 在 Google AI Studio 创建 API Key，优先配置 `gemini-3.5-flash-lite`，作为 Groq 的独立上游备份。
 4. 需要更多模型选择时再配置 OpenRouter。`openrouter/free` 的实际模型不固定，不应依赖某个模型特有的输出格式。
-5. `chatgpt-a` 在服务方提供新域名之前保持不可用或直接停用，不要通过 hosts 文件猜测 IP。
+5. 原公网域名在服务方恢复 DNS 之前不要重新启用，也不要通过 hosts 文件猜测 IP。
 
 ## 容器连接规则
 
@@ -44,6 +44,14 @@ http://ollama:11434/v1
 ```
 
 如果模型服务只监听宿主机 `127.0.0.1`，容器仍然无法访问；需要让模型服务监听 Docker 网桥可达地址，并通过主机防火墙限制来源。不要为了省事直接把未鉴权的 Ollama 端口暴露到公网。
+
+当前生产宿主机无法直接访问内网模型网关，因此采用两段转发：内网开发机上的 systemd 服务把 `10.251.239.186:8081` 反向映射到生产宿主机 `127.0.0.1:19080`，生产 Compose 的 `model-relay` 再从 Docker 网桥 `172.17.0.1:18081` 转发到该回环端口。后端容器使用：
+
+```text
+http://host.docker.internal:18081/v1
+```
+
+中继只监听 Docker 网桥，不监听公网接口。隧道状态可通过 `systemctl --user status ai-workbench-model-tunnel.service` 检查；生产端可通过 `docker compose ps model-relay` 和容器内的 `/models` 请求验证。
 
 ## 工作台连接判定
 

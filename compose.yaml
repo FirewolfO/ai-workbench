@@ -1,6 +1,13 @@
 name: ai-workbench
 
 services:
+  model-relay:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./deploy/nginx/model-relay.conf:/etc/nginx/nginx.conf:ro
+
   backend:
     build:
       context: ./backend

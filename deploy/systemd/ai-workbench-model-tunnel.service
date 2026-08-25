@@ -1,0 +1,14 @@
+[Unit]
+Description=AI Workbench production model gateway tunnel
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -NT -o BatchMode=yes -o ConnectTimeout=20 -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R 127.0.0.1:19080:10.251.239.186:8081 lxvb
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

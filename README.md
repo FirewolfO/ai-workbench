@@ -111,6 +111,8 @@ POST {baseUrl}/chat/completions
 
 云端 OpenAI Compatible 服务通常需要 API Key；Ollama 等内网模型可留空。只有内部管理员能够创建和修改连接，普通用户只能获取已启用连接的名称与默认模型。生产环境仍应通过网络策略限制后端可访问的模型服务地址。
 
+系统首次启动时会预置 OpenAI、Google Gemini、DeepSeek、阿里云百炼、Kimi、智谱 GLM、xAI Grok 和 OpenRouter 连接。预置连接的 API Key 为空且默认停用；管理员填写密钥、确认模型 ID 后再启用即可。初始化不会覆盖已有同地址连接，也不会在后续启动时恢复已经删除或修改的预置项。
+
 ## 验证
 
 ```bash

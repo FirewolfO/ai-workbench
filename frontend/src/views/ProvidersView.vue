@@ -51,7 +51,7 @@ onMounted(load)
       <article v-for="item in providers" :key="item.id" class="provider-card">
         <header><span class="provider-icon"><el-icon><Connection /></el-icon></span><el-tag :type="item.enabled ? 'success' : 'info'" effect="plain">{{ item.enabled ? '已启用' : '已停用' }}</el-tag></header>
         <h3>{{ item.name }}</h3><p>{{ item.baseUrl }}</p>
-        <dl><div><dt>默认模型</dt><dd>{{ item.defaultModel }}</dd></div><div><dt>访问密钥</dt><dd><el-icon><Key /></el-icon>{{ item.hasApiKey ? '已加密配置' : '无需密钥' }}</dd></div></dl>
+        <dl><div><dt>默认模型</dt><dd>{{ item.defaultModel }}</dd></div><div><dt>访问密钥</dt><dd><el-icon><Key /></el-icon>{{ item.hasApiKey ? '已加密配置' : '未填写' }}</dd></div></dl>
         <footer><el-button @click="test(item)">测试连接</el-button><span><el-button text :icon="Edit" aria-label="编辑" @click="openEdit(item)" /><el-button text type="danger" :icon="Delete" aria-label="删除" @click="remove(item)" /></span></footer>
       </article>
       <button v-if="!loading && !providers.length" class="provider-empty" type="button" @click="openCreate"><el-icon><Plus /></el-icon><strong>添加第一个模型连接</strong><span>支持 OpenAI、Azure OpenAI、Ollama 等兼容接口</span></button>

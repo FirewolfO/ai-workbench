@@ -2,6 +2,11 @@ package model
 
 import "time"
 
+type DataMigration struct {
+	Name      string    `gorm:"primaryKey;size:100"`
+	AppliedAt time.Time `gorm:"not null"`
+}
+
 type Provider struct {
 	ID               string    `gorm:"primaryKey;size:40" json:"id"`
 	OwnerID          string    `gorm:"size:100;index;not null" json:"-"`

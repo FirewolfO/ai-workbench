@@ -30,6 +30,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer database.Close()
+	if err := database.SeedBuiltinProviders(); err != nil {
+		log.Fatal(err)
+	}
 	identities := identity.New(database, cfg.PermissionAPIBaseURL, cfg.PeopleAPIBaseURL, cfg.PeopleAuthorizeURL, cfg.PeopleClientID, cfg.PeopleClientSecret, cfg.OAuthRedirectURIs)
 	service := workbench.New(database, vault, llm.New(), cfg.AttachmentDir)
 	service.StartAttachmentCleanup(context.Background())

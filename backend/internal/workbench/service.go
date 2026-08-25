@@ -30,7 +30,7 @@ var (
 	ErrNotFound   = errors.New("not found")
 	ErrConflict   = errors.New("conflict")
 	ErrProvider   = errors.New("provider unavailable")
-	ErrNoProvider = errors.New("no enabled provider")
+	ErrNoProvider = errors.New("no available provider")
 	ErrForbidden  = errors.New("forbidden")
 	ErrCanceled   = errors.New("generation canceled")
 )
@@ -184,7 +184,7 @@ func (s *Service) Providers(actor identity.Actor) ([]model.Provider, error) {
 
 func (s *Service) AvailableModels(_ identity.Actor) ([]AvailableModel, error) {
 	var providers []model.Provider
-	if err := s.database.DB.Where("enabled = ?", true).Order("created_at ASC").Find(&providers).Error; err != nil {
+	if err := s.database.DB.Where("enabled = ? AND available = ?", true, true).Order("created_at ASC").Find(&providers).Error; err != nil {
 		return nil, err
 	}
 	result := make([]AvailableModel, 0, len(providers))
@@ -256,15 +256,43 @@ func (s *Service) TestProvider(ctx context.Context, actor identity.Actor, id str
 	if err != nil {
 		return nil, err
 	}
+	testedAt := time.Now()
 	key, err := s.providerKey(provider)
 	if err != nil {
-		return nil, err
+		if saveErr := s.recordProviderTest(provider, testedAt, 0, err); saveErr != nil {
+			return nil, saveErr
+		}
+		return nil, fmt.Errorf("%w: %v", ErrProvider, err)
 	}
 	latency, err := s.models.Test(ctx, provider.BaseURL, key, provider.DefaultModel)
 	if err != nil {
+		if saveErr := s.recordProviderTest(provider, testedAt, 0, err); saveErr != nil {
+			return nil, saveErr
+		}
 		return nil, fmt.Errorf("%w: %v", ErrProvider, err)
 	}
-	return &ProviderTest{OK: true, LatencyMs: latency.Milliseconds()}, nil
+	latencyMs := latency.Milliseconds()
+	if err := s.recordProviderTest(provider, testedAt, latencyMs, nil); err != nil {
+		return nil, err
+	}
+	return &ProviderTest{OK: true, LatencyMs: latencyMs}, nil
+}
+
+func (s *Service) recordProviderTest(provider *model.Provider, testedAt time.Time, latencyMs int64, testErr error) error {
+	message := ""
+	available := testErr == nil
+	if testErr != nil {
+		message = testErr.Error()
+		if len(message) > 2000 {
+			message = message[:2000]
+		}
+	}
+	return s.database.DB.Model(provider).Updates(map[string]any{
+		"available":            available,
+		"last_tested_at":       testedAt,
+		"last_test_latency_ms": latencyMs,
+		"last_test_error":      message,
+	}).Error
 }
 
 func (s *Service) SummarizeNews(ctx context.Context, actor identity.Actor, articleIDs []string) (*NewsSummaryResult, error) {
@@ -293,7 +321,7 @@ func (s *Service) SummarizeNews(ctx context.Context, actor identity.Actor, artic
 		return result, nil
 	}
 	var provider model.Provider
-	if err := s.database.DB.Where("enabled = ?", true).Order("created_at ASC").First(&provider).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := s.database.DB.Where("enabled = ? AND available = ?", true, true).Order("created_at ASC").First(&provider).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNoProvider
 	} else if err != nil {
 		return nil, err
@@ -375,15 +403,26 @@ func (s *Service) providerFromInput(owner string, input ProviderInput, current *
 	if current != nil {
 		provider.APIKeyCiphertext = current.APIKeyCiphertext
 		provider.Enabled = current.Enabled
+		provider.Available = current.Available
+		provider.LastTestedAt = current.LastTestedAt
+		provider.LastTestLatencyMs = current.LastTestLatencyMs
+		provider.LastTestError = current.LastTestError
 	}
 	if input.Enabled != nil {
 		provider.Enabled = *input.Enabled
 	}
-	if strings.TrimSpace(input.APIKey) != "" {
+	keyChanged := strings.TrimSpace(input.APIKey) != ""
+	if keyChanged {
 		provider.APIKeyCiphertext, err = s.vault.Encrypt(strings.TrimSpace(input.APIKey))
 		if err != nil {
 			return nil, err
 		}
+	}
+	if current != nil && (current.BaseURL != provider.BaseURL || current.DefaultModel != provider.DefaultModel || keyChanged) {
+		provider.Available = false
+		provider.LastTestedAt = nil
+		provider.LastTestLatencyMs = 0
+		provider.LastTestError = ""
 	}
 	return provider, nil
 }
@@ -516,7 +555,7 @@ func (s *Service) CreateConversation(actor identity.Actor, input ConversationInp
 	if err != nil {
 		return nil, err
 	}
-	if !provider.Enabled {
+	if !provider.Enabled || !provider.Available {
 		return nil, ErrInvalid
 	}
 	modelName := strings.TrimSpace(input.Model)
@@ -565,7 +604,7 @@ func (s *Service) UpdateConversation(actor identity.Actor, id string, patch Conv
 	}
 	if patch.ProviderID != nil {
 		provider, err := s.provider(actor, strings.TrimSpace(*patch.ProviderID))
-		if err != nil || !provider.Enabled {
+		if err != nil || !provider.Enabled || !provider.Available {
 			return nil, ErrInvalid
 		}
 		conversation.ProviderID = provider.ID
@@ -620,7 +659,7 @@ func (s *Service) SendMessage(ctx context.Context, actor identity.Actor, convers
 		return nil, err
 	}
 	provider, err := s.provider(actor, conversation.ProviderID)
-	if err != nil || !provider.Enabled {
+	if err != nil || !provider.Enabled || !provider.Available {
 		return nil, fmt.Errorf("%w: model provider is unavailable", ErrInvalid)
 	}
 	attachments, err := s.consumeAttachments(actor, input.AttachmentIDs)
@@ -883,7 +922,7 @@ func (s *Service) decorateConversation(conversation *model.Conversation) {
 
 func (s *Service) defaultProvider() (*model.Provider, error) {
 	var provider model.Provider
-	if err := s.database.DB.Where("enabled = ?", true).Order("created_at ASC").First(&provider).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := s.database.DB.Where("enabled = ? AND available = ?", true, true).Order("created_at ASC").First(&provider).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNoProvider
 	} else if err != nil {
 		return nil, err

@@ -7,6 +7,7 @@ import type { Provider, ProviderInput } from '@/types'
 
 const loading = ref(true)
 const saving = ref(false)
+const testingID = ref('')
 const dialogOpen = ref(false)
 const editingID = ref('')
 const providers = ref<Provider[]>([])
@@ -20,6 +21,16 @@ async function load() {
 }
 function openCreate() { editingID.value = ''; Object.assign(form, { name: '', baseUrl: 'https://api.openai.com/v1', defaultModel: '', apiKey: '', enabled: true }); dialogOpen.value = true }
 function openEdit(item: Provider) { editingID.value = item.id; Object.assign(form, { name: item.name, baseUrl: item.baseUrl, defaultModel: item.defaultModel, apiKey: '', enabled: item.enabled }); dialogOpen.value = true }
+function status(item: Provider): { label: string; type: 'success' | 'danger' | 'warning' | 'info' } {
+  if (!item.enabled) return { label: '已停用', type: 'info' }
+  if (item.available) return { label: '可使用', type: 'success' }
+  if (item.lastTestedAt) return { label: '连接失败', type: 'danger' }
+  return { label: '未测试', type: 'warning' }
+}
+function formatTestTime(value?: string) {
+  if (!value) return '尚未测试'
+  return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value))
+}
 async function save() {
   if (!form.name.trim() || !form.baseUrl.trim() || !form.defaultModel.trim()) { ElMessage.warning('请填写完整的模型连接信息'); return }
   saving.value = true
@@ -33,9 +44,11 @@ async function save() {
   finally { saving.value = false }
 }
 async function test(item: Provider) {
+  testingID.value = item.id
   const close = ElMessage.info({ message: '正在测试模型连接', duration: 0 })
   try { const result = await workbenchApi.testProvider(item.id); close.close(); ElMessage.success(`连接正常，延迟 ${result.latencyMs} ms`) }
   catch (error) { close.close(); ElMessage.error(apiMessage(error, '连接测试失败')) }
+  finally { testingID.value = ''; await load() }
 }
 async function remove(item: Provider) {
   try { await ElMessageBox.confirm(`确定删除“${item.name}”吗？`, '删除模型连接', { type: 'warning' }); await workbenchApi.deleteProvider(item.id); ElMessage.success('已删除'); await load() }
@@ -49,10 +62,11 @@ onMounted(load)
     <div class="page-heading"><div><p>MODEL CONNECTIONS</p><h2>模型连接</h2><span>连接 OpenAI Compatible 模型服务</span></div><el-button type="primary" :icon="Plus" @click="openCreate">添加连接</el-button></div>
     <div v-loading="loading" class="provider-grid">
       <article v-for="item in providers" :key="item.id" class="provider-card">
-        <header><span class="provider-icon"><el-icon><Connection /></el-icon></span><el-tag :type="item.enabled ? 'success' : 'info'" effect="plain">{{ item.enabled ? '已启用' : '已停用' }}</el-tag></header>
+        <header><span class="provider-icon"><el-icon><Connection /></el-icon></span><el-tag :type="status(item).type" effect="plain">{{ status(item).label }}</el-tag></header>
         <h3>{{ item.name }}</h3><p>{{ item.baseUrl }}</p>
-        <dl><div><dt>默认模型</dt><dd>{{ item.defaultModel }}</dd></div><div><dt>访问密钥</dt><dd><el-icon><Key /></el-icon>{{ item.hasApiKey ? '已加密配置' : '未填写' }}</dd></div></dl>
-        <footer><el-button @click="test(item)">测试连接</el-button><span><el-button text :icon="Edit" aria-label="编辑" @click="openEdit(item)" /><el-button text type="danger" :icon="Delete" aria-label="删除" @click="remove(item)" /></span></footer>
+        <dl><div><dt>默认模型</dt><dd>{{ item.defaultModel }}</dd></div><div><dt>访问密钥</dt><dd><el-icon><Key /></el-icon>{{ item.hasApiKey ? '已加密配置' : '未填写' }}</dd></div><div><dt>最近检测</dt><dd>{{ formatTestTime(item.lastTestedAt) }}<template v-if="item.available"> · {{ item.lastTestLatencyMs }} ms</template></dd></div></dl>
+        <p class="provider-error" :title="item.lastTestError">{{ item.lastTestError || ' ' }}</p>
+        <footer><el-button :loading="testingID === item.id" :disabled="Boolean(testingID)" @click="test(item)">测试连接</el-button><span><el-button text :icon="Edit" aria-label="编辑" @click="openEdit(item)" /><el-button text type="danger" :icon="Delete" aria-label="删除" @click="remove(item)" /></span></footer>
       </article>
       <button v-if="!loading && !providers.length" class="provider-empty" type="button" @click="openCreate"><el-icon><Plus /></el-icon><strong>添加第一个模型连接</strong><span>支持 OpenAI、Azure OpenAI、Ollama 等兼容接口</span></button>
     </div>

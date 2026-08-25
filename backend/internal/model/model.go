@@ -8,16 +8,20 @@ type DataMigration struct {
 }
 
 type Provider struct {
-	ID               string    `gorm:"primaryKey;size:40" json:"id"`
-	OwnerID          string    `gorm:"size:100;index;not null" json:"-"`
-	Name             string    `gorm:"size:100;not null" json:"name"`
-	BaseURL          string    `gorm:"size:500;not null" json:"baseUrl"`
-	DefaultModel     string    `gorm:"size:160;not null" json:"defaultModel"`
-	APIKeyCiphertext string    `gorm:"type:text;not null" json:"-"`
-	Enabled          bool      `gorm:"not null;default:true" json:"enabled"`
-	CreatedAt        time.Time `json:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt"`
-	HasAPIKey        bool      `gorm:"-" json:"hasApiKey"`
+	ID                string     `gorm:"primaryKey;size:40" json:"id"`
+	OwnerID           string     `gorm:"size:100;index;not null" json:"-"`
+	Name              string     `gorm:"size:100;not null" json:"name"`
+	BaseURL           string     `gorm:"size:500;not null" json:"baseUrl"`
+	DefaultModel      string     `gorm:"size:160;not null" json:"defaultModel"`
+	APIKeyCiphertext  string     `gorm:"type:text;not null" json:"-"`
+	Enabled           bool       `gorm:"not null;default:true" json:"enabled"`
+	Available         bool       `gorm:"not null;default:false;index" json:"available"`
+	LastTestedAt      *time.Time `json:"lastTestedAt,omitempty"`
+	LastTestLatencyMs int64      `gorm:"not null;default:0" json:"lastTestLatencyMs"`
+	LastTestError     string     `gorm:"type:text;not null;default:''" json:"lastTestError"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	UpdatedAt         time.Time  `json:"updatedAt"`
+	HasAPIKey         bool       `gorm:"-" json:"hasApiKey"`
 }
 
 type Prompt struct {

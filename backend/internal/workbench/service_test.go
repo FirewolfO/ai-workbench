@@ -41,6 +41,18 @@ func testServiceWithModels(t *testing.T, models llm.Client) *Service {
 	return New(database, vault, models, t.TempDir())
 }
 
+func createAvailableProvider(t *testing.T, service *Service, admin identity.Actor, input ProviderInput) *model.Provider {
+	t.Helper()
+	provider, err := service.CreateProvider(admin, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.TestProvider(context.Background(), admin, provider.ID); err != nil {
+		t.Fatal(err)
+	}
+	return provider
+}
+
 type summaryModels struct{}
 
 func (summaryModels) Complete(_ context.Context, _ llm.CompletionRequest) (*llm.CompletionResult, error) {
@@ -58,6 +70,9 @@ func TestPersonalDataIsolationAndChat(t *testing.T) {
 	provider, err := service.CreateProvider(admin, ProviderInput{Name: "Local", BaseURL: "http://localhost:11434/v1", DefaultModel: "model", APIKey: "secret"})
 	if err != nil || !provider.HasAPIKey || provider.APIKeyCiphertext == "secret" {
 		t.Fatalf("CreateProvider() = %#v, %v", provider, err)
+	}
+	if _, err := service.TestProvider(context.Background(), admin, provider.ID); err != nil {
+		t.Fatal(err)
 	}
 	conversation, err := service.CreateConversation(alice, ConversationInput{})
 	if err != nil {
@@ -84,7 +99,7 @@ func TestPromptLifecycleAndProviderConflict(t *testing.T) {
 	service := testService(t)
 	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
 	actor := identity.Actor{Username: "alice", Role: identity.RoleUser}
-	provider, _ := service.CreateProvider(admin, ProviderInput{Name: "Local", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	provider := createAvailableProvider(t, service, admin, ProviderInput{Name: "Local", BaseURL: "http://localhost/v1", DefaultModel: "model"})
 	_, _ = service.CreateConversation(actor, ConversationInput{})
 	if err := service.DeleteProvider(admin, provider.ID); !containsError(err, ErrConflict) {
 		t.Fatalf("DeleteProvider() error = %v", err)
@@ -103,9 +118,7 @@ func TestSummarizeNewsUsesOwnedProviderAndCachesResult(t *testing.T) {
 	service := testServiceWithModels(t, summaryModels{})
 	admin := identity.Actor{ID: "admin", Username: "admin", Source: "internal", Role: identity.RoleAdmin}
 	actor := identity.Actor{ID: "alice", Username: "alice", Role: identity.RoleUser}
-	if _, err := service.CreateProvider(admin, ProviderInput{Name: "Local", BaseURL: "http://localhost/v1", DefaultModel: "model"}); err != nil {
-		t.Fatal(err)
-	}
+	createAvailableProvider(t, service, admin, ProviderInput{Name: "Local", BaseURL: "http://localhost/v1", DefaultModel: "model"})
 	article := model.NewsArticle{ID: "news_one", SourceCode: "test", SourceName: "Test", Title: "Agent release", Summary: "An agent was released.", URL: "https://example.com/agent", PublishedAt: time.Now(), FetchedAt: time.Now()}
 	if err := service.database.DB.Create(&article).Error; err != nil {
 		t.Fatal(err)
@@ -139,6 +152,12 @@ func TestAdminDashboardAggregatesAllUsersAndProvidersAreAdminOnly(t *testing.T) 
 	if _, err := service.Providers(alice); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("ordinary user providers error = %v", err)
 	}
+	if unavailable, err := service.AvailableModels(alice); err != nil || len(unavailable) != 0 {
+		t.Fatalf("untested provider should be unavailable: %#v, %v", unavailable, err)
+	}
+	if _, err := service.TestProvider(context.Background(), admin, provider.ID); err != nil {
+		t.Fatal(err)
+	}
 	available, err := service.AvailableModels(alice)
 	if err != nil || len(available) != 1 || available[0].ID != provider.ID {
 		t.Fatalf("AvailableModels() = %#v, %v", available, err)
@@ -162,6 +181,55 @@ func TestAdminDashboardAggregatesAllUsersAndProvidersAreAdminOnly(t *testing.T) 
 	}
 }
 
+type providerTestModels struct{ testErr error }
+
+func (*providerTestModels) Complete(_ context.Context, request llm.CompletionRequest) (*llm.CompletionResult, error) {
+	return &llm.CompletionResult{Content: "OK", Model: request.Model}, nil
+}
+func (models *providerTestModels) Test(context.Context, string, string, string) (time.Duration, error) {
+	return 12 * time.Millisecond, models.testErr
+}
+
+func TestProviderHealthLifecycle(t *testing.T) {
+	models := &providerTestModels{}
+	service := testServiceWithModels(t, models)
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	input := ProviderInput{Name: "Shared", BaseURL: "https://models.example/v1", DefaultModel: "model"}
+	provider, err := service.CreateProvider(admin, input)
+	if err != nil || provider.Available || provider.LastTestedAt != nil {
+		t.Fatalf("new provider health = %#v, %v", provider, err)
+	}
+	if _, err := service.TestProvider(context.Background(), admin, provider.ID); err != nil {
+		t.Fatal(err)
+	}
+	providers, _ := service.Providers(admin)
+	if !providers[0].Available || providers[0].LastTestedAt == nil || providers[0].LastTestLatencyMs != 12 || providers[0].LastTestError != "" {
+		t.Fatalf("successful provider health = %#v", providers[0])
+	}
+	input.Name = "Renamed"
+	updated, err := service.UpdateProvider(admin, provider.ID, input)
+	if err != nil || !updated.Available || updated.LastTestedAt == nil {
+		t.Fatalf("non-connection update should retain health = %#v, %v", updated, err)
+	}
+	input.DefaultModel = "other-model"
+	updated, err = service.UpdateProvider(admin, provider.ID, input)
+	if err != nil || updated.Available || updated.LastTestedAt != nil {
+		t.Fatalf("connection update should reset health = %#v, %v", updated, err)
+	}
+	models.testErr = errors.New("upstream unavailable")
+	if _, err := service.TestProvider(context.Background(), admin, provider.ID); !errors.Is(err, ErrProvider) {
+		t.Fatalf("failed provider test error = %v", err)
+	}
+	providers, _ = service.Providers(admin)
+	if providers[0].Available || providers[0].LastTestedAt == nil || providers[0].LastTestError != "upstream unavailable" {
+		t.Fatalf("failed provider health = %#v", providers[0])
+	}
+	available, err := service.AvailableModels(identity.Actor{Username: "alice"})
+	if err != nil || len(available) != 0 {
+		t.Fatalf("failed provider should be unavailable: %#v, %v", available, err)
+	}
+}
+
 type captureModels struct{ request llm.CompletionRequest }
 
 func (models *captureModels) Complete(_ context.Context, request llm.CompletionRequest) (*llm.CompletionResult, error) {
@@ -177,7 +245,7 @@ func TestAttachmentIsConsumedAndDeletedAfterMessage(t *testing.T) {
 	service := testServiceWithModels(t, models)
 	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
 	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
-	_, _ = service.CreateProvider(admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	createAvailableProvider(t, service, admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
 	conversation, _ := service.CreateConversation(alice, ConversationInput{ReasoningEffort: "high"})
 	attachment, err := service.CreateAttachment(alice, "notes.txt", "text/plain", []byte("release checklist"))
 	if err != nil {
@@ -222,7 +290,7 @@ func TestStopGeneration(t *testing.T) {
 	service := testServiceWithModels(t, models)
 	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
 	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
-	_, _ = service.CreateProvider(admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	createAvailableProvider(t, service, admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
 	conversation, _ := service.CreateConversation(alice, ConversationInput{})
 	result := make(chan error, 1)
 	go func() {
@@ -247,7 +315,7 @@ func TestConversationRejectsInvalidReasoningEffort(t *testing.T) {
 	service := testService(t)
 	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
 	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
-	_, _ = service.CreateProvider(admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	createAvailableProvider(t, service, admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
 	conversation, err := service.CreateConversation(alice, ConversationInput{})
 	if err != nil {
 		t.Fatal(err)

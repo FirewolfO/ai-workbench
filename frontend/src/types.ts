@@ -17,6 +17,10 @@ export interface Provider {
   baseUrl: string
   defaultModel: string
   enabled: boolean
+  available: boolean
+  lastTestedAt?: string
+  lastTestLatencyMs: number
+  lastTestError: string
   hasApiKey: boolean
   createdAt: string
   updatedAt: string

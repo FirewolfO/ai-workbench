@@ -7,6 +7,7 @@ import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
@@ -21,6 +22,10 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.widget.FrameLayout;
 import android.widget.Toast;
 
 import org.json.JSONObject;
@@ -49,12 +54,36 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().setStatusBarColor(Color.rgb(22, 53, 47));
+        getWindow().setStatusBarColor(Color.WHITE);
         getWindow().setNavigationBarColor(Color.WHITE);
+        getWindow().setNavigationBarContrastEnforced(false);
+        WindowInsetsController bars = getWindow().getInsetsController();
+        if (bars != null) {
+            int lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                    | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+            bars.setSystemBarsAppearance(lightBars, lightBars);
+        }
 
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.WHITE);
         webView = new WebView(this);
         webView.setBackgroundColor(Color.rgb(244, 246, 245));
-        setContentView(webView);
+        root.addView(webView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        root.setOnApplyWindowInsetsListener((view, windowInsets) -> {
+            Insets safeArea = Insets.max(
+                    windowInsets.getInsets(WindowInsets.Type.systemBars()),
+                    windowInsets.getInsets(WindowInsets.Type.displayCutout()));
+            FrameLayout.LayoutParams layout = (FrameLayout.LayoutParams) webView.getLayoutParams();
+            if (layout.leftMargin != safeArea.left || layout.topMargin != safeArea.top
+                    || layout.rightMargin != safeArea.right || layout.bottomMargin != safeArea.bottom) {
+                layout.setMargins(safeArea.left, safeArea.top, safeArea.right, safeArea.bottom);
+                webView.setLayoutParams(layout);
+            }
+            return windowInsets;
+        });
+        setContentView(root);
+        root.requestApplyInsets();
         configureWebView();
         getOnBackInvokedDispatcher().registerOnBackInvokedCallback(0, this::handleBack);
 

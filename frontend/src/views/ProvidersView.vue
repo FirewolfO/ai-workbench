@@ -46,7 +46,7 @@ async function save() {
 async function test(item: Provider) {
   testingID.value = item.id
   const close = ElMessage.info({ message: '正在测试模型连接', duration: 0 })
-  try { const result = await workbenchApi.testProvider(item.id); close.close(); ElMessage.success(`连接正常，延迟 ${result.latencyMs} ms`) }
+  try { const result = await workbenchApi.testProvider(item.id); close.close(); ElMessage.success(`连接正常，发现 ${result.modelCount} 个模型，延迟 ${result.latencyMs} ms`) }
   catch (error) { close.close(); ElMessage.error(apiMessage(error, '连接测试失败')) }
   finally { testingID.value = ''; await load() }
 }
@@ -64,7 +64,7 @@ onMounted(load)
       <article v-for="item in providers" :key="item.id" class="provider-card">
         <header><span class="provider-icon"><el-icon><Connection /></el-icon></span><el-tag :type="status(item).type" effect="plain">{{ status(item).label }}</el-tag></header>
         <h3>{{ item.name }}</h3><p>{{ item.baseUrl }}</p>
-        <dl><div><dt>默认模型</dt><dd>{{ item.defaultModel }}</dd></div><div><dt>访问密钥</dt><dd><el-icon><Key /></el-icon>{{ item.hasApiKey ? '已加密配置' : '未填写' }}</dd></div><div><dt>最近检测</dt><dd>{{ formatTestTime(item.lastTestedAt) }}<template v-if="item.available"> · {{ item.lastTestLatencyMs }} ms</template></dd></div></dl>
+        <dl><div><dt>默认模型</dt><dd>{{ item.defaultModel }}</dd></div><div><dt>可用模型</dt><dd>{{ item.models.length }} 个</dd></div><div><dt>访问密钥</dt><dd><el-icon><Key /></el-icon>{{ item.hasApiKey ? '已加密配置' : '未填写' }}</dd></div><div><dt>最近检测</dt><dd>{{ formatTestTime(item.lastTestedAt) }}<template v-if="item.available"> · {{ item.lastTestLatencyMs }} ms</template></dd></div></dl>
         <p class="provider-error" :title="item.lastTestError">{{ item.lastTestError || ' ' }}</p>
         <footer><el-button :loading="testingID === item.id" :disabled="Boolean(testingID)" @click="test(item)">测试连接</el-button><span><el-button text :icon="Edit" aria-label="编辑" @click="openEdit(item)" /><el-button text type="danger" :icon="Delete" aria-label="删除" @click="remove(item)" /></span></footer>
       </article>

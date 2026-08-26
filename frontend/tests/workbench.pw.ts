@@ -27,9 +27,14 @@ test.beforeEach(async ({ page }) => {
     const path = new URL(route.request().url()).pathname
     let data: unknown = null
     if (path.endsWith('/auth/me')) data = { user: { id: 'internal:alice', username: 'alice', displayName: 'Alice', source: 'internal', role: 'user' } }
-    else if (path.endsWith('/models')) data = [{ id: 'prv_demo', name: '企业模型', defaultModel: 'company-model' }]
+    else if (path.endsWith('/models')) data = [{ id: 'prv_demo', name: '企业模型', defaultModel: 'company-model', models: ['company-model', 'company-model-pro'], modelsUpdatedAt: '2026-08-26T08:00:00Z' }]
     else if (path.endsWith('/prompts')) data = [{ id: 'pmt_demo', title: '技术评审', description: '评审技术方案', category: '研发', content: '请评审以下技术方案：', favorite: true, useCount: 8, createdAt: '2026-08-11T09:00:00Z', updatedAt: '2026-08-11T09:00:00Z' }]
-    else if (path.endsWith('/conversations/cnv_demo')) data = conversation
+    else if (path.endsWith('/conversations/cnv_demo')) {
+      if (route.request().method() === 'PATCH') {
+        await new Promise((resolve) => setTimeout(resolve, 700))
+        data = { ...conversation, ...(route.request().postDataJSON() as object) }
+      } else data = conversation
+    }
     else if (path.endsWith('/conversations')) data = [conversation]
     else if (path.endsWith('/frontier')) data = frontier
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 'OK', message: 'success', data }) })
@@ -52,10 +57,40 @@ test('conversation workspace is usable without overflow', async ({ page }, testI
   await expect(page.getByRole('heading', { name: '发布方案评审' })).toBeVisible()
   await expect(page.getByPlaceholder('输入消息')).toBeVisible()
   await expect(page.getByText('评审结论')).toBeVisible()
+  await expect(page.getByRole('combobox', { name: '供应商' })).toBeVisible()
   await expect(page.getByRole('combobox', { name: '模型' })).toBeVisible()
-  await expect(page.getByText('中等', { exact: true })).toBeVisible()
+  const effortSelect = page.locator('.composer-effort')
+  await expect(effortSelect.locator('.el-select__selected-item').filter({ hasText: '中等' })).toBeVisible()
+  const modelBox = await page.getByRole('combobox', { name: '模型' }).boundingBox()
+  const composer = await page.getByPlaceholder('输入消息').boundingBox()
+  expect(modelBox && composer && modelBox.y < composer.y).toBe(true)
+
+  await page.getByRole('combobox', { name: '模型' }).click()
+  await page.getByRole('option', { name: 'company-model-pro' }).click()
+  await expect(page.locator('.chat-model-bar label').nth(1).locator('.el-select__selected-item').filter({ hasText: 'company-model-pro' })).toBeVisible()
+
+  await effortSelect.click()
+  await page.getByRole('option', { name: '高', exact: true }).click()
+  await expect(effortSelect.locator('.el-select__selected-item').filter({ hasText: '高' })).toBeVisible({ timeout: 150 })
+  await page.keyboard.press('Escape')
   await expect(page.getByText('模型连接', { exact: true })).toHaveCount(0)
   await expect(page.getByText('用户管理', { exact: true })).toHaveCount(0)
+
+  if (testInfo.project.name === 'mobile') {
+    await page.getByRole('button', { name: '打开导航' }).click()
+    const navigationDrawer = page.locator('.el-drawer').filter({ hasText: '功能' })
+    await expect(navigationDrawer).toBeVisible()
+    expect((await navigationDrawer.boundingBox())?.width).toBeLessThanOrEqual(221)
+    await page.getByRole('button', { name: '关闭导航' }).click()
+
+    await page.getByRole('button', { name: '选择提示词' }).click()
+    const promptDrawer = page.locator('.el-drawer').filter({ hasText: '选择提示词' })
+    await expect(promptDrawer).toBeVisible()
+    const viewportWidth = page.viewportSize()?.width || 0
+    expect((await promptDrawer.boundingBox())?.width).toBeLessThanOrEqual(Math.min(320, viewportWidth * 0.78) + 1)
+    await promptDrawer.locator('.el-drawer__close-btn').click()
+    await expect(promptDrawer).toBeHidden()
+  }
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
   expect(overflow).toBe(false)
   await page.screenshot({ path: `../.runtime/screenshots/chat-${testInfo.project.name}.png`, fullPage: true })

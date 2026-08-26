@@ -48,7 +48,10 @@ func TestConnectionTestValidatesJSONAndCompletion(t *testing.T) {
 		writer.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/v1/models":
-			_ = json.NewEncoder(writer).Encode(map[string]any{"data": []any{map[string]string{"id": "test-model"}}})
+			_ = json.NewEncoder(writer).Encode(map[string]any{"data": []any{
+				map[string]string{"id": "test-model-pro"}, map[string]string{"id": "test-model"},
+				map[string]string{"id": "test-model"}, map[string]string{"id": ""},
+			}})
 		case "/v1/chat/completions":
 			_ = json.NewEncoder(writer).Encode(map[string]any{"model": "test-model", "choices": []any{map[string]any{"message": map[string]string{"role": "assistant", "content": "OK"}}}})
 		default:
@@ -56,8 +59,12 @@ func TestConnectionTestValidatesJSONAndCompletion(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	if _, err := New().Test(context.Background(), server.URL+"/v1", "secret", "test-model"); err != nil {
+	result, err := New().Test(context.Background(), server.URL+"/v1", "secret", "test-model")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(result.Models) != 2 || result.Models[0] != "test-model" || result.Models[1] != "test-model-pro" {
+		t.Fatalf("models = %#v", result.Models)
 	}
 	if requests != 2 {
 		t.Fatalf("expected models and completion requests, got %d", requests)

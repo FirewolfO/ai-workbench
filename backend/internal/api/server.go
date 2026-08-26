@@ -219,6 +219,12 @@ func (s *Server) dashboard(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) models(writer http.ResponseWriter, request *http.Request) {
+	if request.URL.Query().Get("refresh") == "true" {
+		if err := s.workbench.RefreshAvailableModels(request.Context(), actor(request)); err != nil {
+			respond(writer, nil, err, http.StatusOK)
+			return
+		}
+	}
 	result, err := s.workbench.AvailableModels(actor(request))
 	respond(writer, result, err, http.StatusOK)
 }

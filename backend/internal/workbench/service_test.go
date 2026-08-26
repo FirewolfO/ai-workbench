@@ -19,8 +19,8 @@ type fakeModels struct{}
 func (fakeModels) Complete(_ context.Context, request llm.CompletionRequest) (*llm.CompletionResult, error) {
 	return &llm.CompletionResult{Content: "回答", Model: request.Model, PromptTokens: 8, CompletionTokens: 3, Latency: 20 * time.Millisecond}, nil
 }
-func (fakeModels) Test(context.Context, string, string, string) (time.Duration, error) {
-	return 10 * time.Millisecond, nil
+func (fakeModels) Test(context.Context, string, string, string) (*llm.ConnectionTest, error) {
+	return &llm.ConnectionTest{Latency: 10 * time.Millisecond, Models: []string{"model"}}, nil
 }
 
 func testService(t *testing.T) *Service {
@@ -58,8 +58,8 @@ type summaryModels struct{}
 func (summaryModels) Complete(_ context.Context, _ llm.CompletionRequest) (*llm.CompletionResult, error) {
 	return &llm.CompletionResult{Content: "```json\n[{\"id\":\"news_one\",\"summary\":\"这是一条经过压缩的中文人工智能热点概要，说明事件内容及其主要价值。\"}]\n```", Model: "model"}, nil
 }
-func (summaryModels) Test(context.Context, string, string, string) (time.Duration, error) {
-	return 0, nil
+func (summaryModels) Test(context.Context, string, string, string) (*llm.ConnectionTest, error) {
+	return &llm.ConnectionTest{Models: []string{"model"}}, nil
 }
 
 func TestPersonalDataIsolationAndChat(t *testing.T) {
@@ -181,17 +181,23 @@ func TestAdminDashboardAggregatesAllUsersAndProvidersAreAdminOnly(t *testing.T) 
 	}
 }
 
-type providerTestModels struct{ testErr error }
+type providerTestModels struct {
+	testErr error
+	catalog []string
+}
 
 func (*providerTestModels) Complete(_ context.Context, request llm.CompletionRequest) (*llm.CompletionResult, error) {
 	return &llm.CompletionResult{Content: "OK", Model: request.Model}, nil
 }
-func (models *providerTestModels) Test(context.Context, string, string, string) (time.Duration, error) {
-	return 12 * time.Millisecond, models.testErr
+func (models *providerTestModels) Test(context.Context, string, string, string) (*llm.ConnectionTest, error) {
+	return &llm.ConnectionTest{Latency: 12 * time.Millisecond, Models: append([]string(nil), models.catalog...)}, models.testErr
+}
+func (models *providerTestModels) Models(context.Context, string, string) ([]string, error) {
+	return append([]string(nil), models.catalog...), models.testErr
 }
 
 func TestProviderHealthLifecycle(t *testing.T) {
-	models := &providerTestModels{}
+	models := &providerTestModels{catalog: []string{"model", "model-pro"}}
 	service := testServiceWithModels(t, models)
 	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
 	input := ProviderInput{Name: "Shared", BaseURL: "https://models.example/v1", DefaultModel: "model"}
@@ -199,11 +205,12 @@ func TestProviderHealthLifecycle(t *testing.T) {
 	if err != nil || provider.Available || provider.LastTestedAt != nil {
 		t.Fatalf("new provider health = %#v, %v", provider, err)
 	}
-	if _, err := service.TestProvider(context.Background(), admin, provider.ID); err != nil {
-		t.Fatal(err)
+	result, err := service.TestProvider(context.Background(), admin, provider.ID)
+	if err != nil || result.ModelCount != 2 {
+		t.Fatalf("TestProvider() = %#v, %v", result, err)
 	}
 	providers, _ := service.Providers(admin)
-	if !providers[0].Available || providers[0].LastTestedAt == nil || providers[0].LastTestLatencyMs != 12 || providers[0].LastTestError != "" {
+	if !providers[0].Available || providers[0].LastTestedAt == nil || providers[0].LastTestLatencyMs != 12 || providers[0].LastTestError != "" || len(providers[0].Models) != 2 {
 		t.Fatalf("successful provider health = %#v", providers[0])
 	}
 	input.Name = "Renamed"
@@ -213,7 +220,7 @@ func TestProviderHealthLifecycle(t *testing.T) {
 	}
 	input.DefaultModel = "other-model"
 	updated, err = service.UpdateProvider(admin, provider.ID, input)
-	if err != nil || updated.Available || updated.LastTestedAt != nil {
+	if err != nil || updated.Available || updated.LastTestedAt != nil || len(updated.Models) != 1 || updated.Models[0] != "other-model" || updated.ModelsUpdatedAt != nil {
 		t.Fatalf("connection update should reset health = %#v, %v", updated, err)
 	}
 	models.testErr = errors.New("upstream unavailable")
@@ -230,14 +237,46 @@ func TestProviderHealthLifecycle(t *testing.T) {
 	}
 }
 
+func TestRefreshAvailableModelsUpdatesStaleCatalog(t *testing.T) {
+	models := &providerTestModels{catalog: []string{"model", "model-pro"}}
+	service := testServiceWithModels(t, models)
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	provider := createAvailableProvider(t, service, admin, ProviderInput{Name: "Shared", BaseURL: "https://models.example/v1", DefaultModel: "model"})
+
+	stale := time.Now().Add(-modelCatalogRefreshInterval - time.Minute)
+	if err := service.database.DB.Model(&model.Provider{}).Where("id = ?", provider.ID).Update("models_updated_at", stale).Error; err != nil {
+		t.Fatal(err)
+	}
+	models.catalog = []string{"model-next", "model"}
+	if err := service.RefreshAvailableModels(context.Background(), identity.Actor{Username: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	available, err := service.AvailableModels(identity.Actor{Username: "alice"})
+	if err != nil || len(available) != 1 || len(available[0].Models) != 2 || available[0].Models[0] != "model" || available[0].Models[1] != "model-next" {
+		t.Fatalf("refreshed models = %#v, %v", available, err)
+	}
+
+	models.testErr = errors.New("temporary catalog failure")
+	if err := service.database.DB.Model(&model.Provider{}).Where("id = ?", provider.ID).Update("models_updated_at", stale).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RefreshAvailableModels(context.Background(), identity.Actor{Username: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	available, _ = service.AvailableModels(identity.Actor{Username: "alice"})
+	if len(available[0].Models) != 2 || available[0].Models[1] != "model-next" {
+		t.Fatalf("transient failure should preserve catalog: %#v", available)
+	}
+}
+
 type captureModels struct{ request llm.CompletionRequest }
 
 func (models *captureModels) Complete(_ context.Context, request llm.CompletionRequest) (*llm.CompletionResult, error) {
 	models.request = request
 	return &llm.CompletionResult{Content: "done", Model: request.Model}, nil
 }
-func (*captureModels) Test(context.Context, string, string, string) (time.Duration, error) {
-	return 0, nil
+func (*captureModels) Test(context.Context, string, string, string) (*llm.ConnectionTest, error) {
+	return &llm.ConnectionTest{Models: []string{"model"}}, nil
 }
 
 func TestAttachmentIsConsumedAndDeletedAfterMessage(t *testing.T) {
@@ -281,8 +320,8 @@ func (models *blockingModels) Complete(ctx context.Context, _ llm.CompletionRequ
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
-func (*blockingModels) Test(context.Context, string, string, string) (time.Duration, error) {
-	return 0, nil
+func (*blockingModels) Test(context.Context, string, string, string) (*llm.ConnectionTest, error) {
+	return &llm.ConnectionTest{Models: []string{"model"}}, nil
 }
 
 func TestStopGeneration(t *testing.T) {

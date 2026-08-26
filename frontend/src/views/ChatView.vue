@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChatLineRound, Close, CopyDocument, Delete, Edit, MagicStick, Menu, MoreFilled, Paperclip, Plus, Promotion, Search, Setting, Star, StarFilled, VideoPause } from '@element-plus/icons-vue'
+import { ChatLineRound, Close, CopyDocument, Delete, Edit, MagicStick, Menu, MoreFilled, Paperclip, Plus, Promotion, Refresh, Search, Setting, Star, StarFilled, VideoPause } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiMessage, workbenchApi } from '@/api'
 import { renderMarkdown } from '@/utils/markdown'
@@ -15,6 +15,8 @@ const loading = ref(true)
 const sending = ref(false)
 const stopping = ref(false)
 const uploading = ref(false)
+const switchingModel = ref(false)
+const refreshingModels = ref(false)
 const search = ref('')
 const draft = ref('')
 const conversations = ref<Conversation[]>([])
@@ -29,24 +31,54 @@ const thread = ref<HTMLElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const settings = reactive({ providerId: '', model: '', systemPrompt: '', reasoningEffort: 'medium' as ReasoningEffort })
 const activeModel = computed(() => models.value.find((item) => item.id === current.value?.providerId))
+const activeModelNames = computed(() => {
+  const result = [...(activeModel.value?.models || [])]
+  const selected = current.value?.model
+  if (selected && !result.includes(selected)) result.unshift(selected)
+  return result
+})
+const settingsModelNames = computed(() => {
+  const provider = models.value.find((item) => item.id === settings.providerId)
+  const result = [...(provider?.models || [])]
+  if (settings.model && !result.includes(settings.model)) result.unshift(settings.model)
+  return result
+})
 const effortOptions = [{ label: '快速', value: 'fast' }, { label: '中等', value: 'medium' }, { label: '高', value: 'high' }]
+let modelRefreshTimer: number | undefined
+let reasoningTimer: number | undefined
+let reasoningSaving = false
+let pendingReasoning: { conversationId: string; value: ReasoningEffort } | null = null
+const persistedReasoning = new Map<string, ReasoningEffort>()
 
 async function loadLists() {
-  const [conversationList, modelList, promptList] = await Promise.all([workbenchApi.conversations(search.value), workbenchApi.models(), workbenchApi.prompts()])
+  const [conversationList, promptList] = await Promise.all([workbenchApi.conversations(search.value), workbenchApi.prompts()])
   conversations.value = conversationList
-  models.value = modelList
   prompts.value = promptList
+}
+async function refreshModels(refresh = false, reportError = false) {
+  if (refreshingModels.value) return
+  refreshingModels.value = true
+  try { models.value = await workbenchApi.models(refresh) }
+  catch (error) { if (reportError) ElMessage.error(apiMessage(error, '模型列表加载失败')) }
+  finally { refreshingModels.value = false }
+}
+function refreshModelsWhenVisible() {
+  if (!document.hidden) void refreshModels(true)
 }
 async function loadCurrent(id: string) {
   loading.value = true
-  try { current.value = await workbenchApi.conversation(id); await scrollToEnd() }
+  try {
+    current.value = await workbenchApi.conversation(id)
+    persistedReasoning.set(id, current.value.reasoningEffort)
+    await scrollToEnd()
+  }
   catch (error) { ElMessage.error(apiMessage(error, '对话加载失败')); await router.replace('/chat') }
   finally { loading.value = false }
 }
 async function initialize() {
   loading.value = true
   try {
-    await loadLists()
+    await Promise.all([loadLists(), refreshModels(true, true)])
     const id = typeof route.params.id === 'string' ? route.params.id : ''
     if (id) await loadCurrent(id)
     if (typeof route.query.prompt === 'string') { draft.value = route.query.prompt; await router.replace({ path: route.path }) }
@@ -92,17 +124,47 @@ async function stop() {
     if (!result.stopped) { stopping.value = false; ElMessage.info('当前没有正在生成的回答') }
   } catch (error) { stopping.value = false; ElMessage.error(apiMessage(error, '停止失败')) }
 }
-async function changeModel(providerId: string) {
-  if (!current.value || sending.value) return
+async function changeProvider(providerId: string) {
+  if (!current.value || sending.value || switchingModel.value) return
   const selected = models.value.find((item) => item.id === providerId)
   if (!selected) return
-  try { current.value = await workbenchApi.updateConversation(current.value.id, { providerId, model: selected.defaultModel }) }
+  switchingModel.value = true
+  try { applyConversationUpdate(await workbenchApi.updateConversation(current.value.id, { providerId, model: selected.defaultModel })) }
   catch (error) { ElMessage.error(apiMessage(error, '模型切换失败')) }
+  finally { switchingModel.value = false }
 }
-async function changeReasoning(value: string | number | boolean) {
+async function changeSpecificModel(model: string) {
+  if (!current.value || sending.value || switchingModel.value || !model) return
+  switchingModel.value = true
+  try { applyConversationUpdate(await workbenchApi.updateConversation(current.value.id, { model })) }
+  catch (error) { ElMessage.error(apiMessage(error, '模型切换失败')) }
+  finally { switchingModel.value = false }
+}
+function changeReasoning(value: string | number | boolean) {
   if (!current.value || sending.value) return
-  try { current.value = await workbenchApi.updateConversation(current.value.id, { reasoningEffort: value as ReasoningEffort }) }
-  catch (error) { ElMessage.error(apiMessage(error, '推理档位更新失败')) }
+  const effort = value as ReasoningEffort
+  current.value.reasoningEffort = effort
+  pendingReasoning = { conversationId: current.value.id, value: effort }
+  if (reasoningTimer) window.clearTimeout(reasoningTimer)
+  reasoningTimer = window.setTimeout(() => void flushReasoning(), 180)
+}
+async function flushReasoning() {
+  if (reasoningSaving || !pendingReasoning) return
+  const update = pendingReasoning
+  pendingReasoning = null
+  reasoningSaving = true
+  try {
+    await workbenchApi.updateConversation(update.conversationId, { reasoningEffort: update.value })
+    persistedReasoning.set(update.conversationId, update.value)
+  } catch (error) {
+    if (current.value?.id === update.conversationId && !pendingReasoning) {
+      current.value.reasoningEffort = persistedReasoning.get(update.conversationId) || 'medium'
+      ElMessage.error(apiMessage(error, '推理档位更新失败'))
+    }
+  } finally {
+    reasoningSaving = false
+    if (pendingReasoning) void flushReasoning()
+  }
 }
 async function selectFiles(event: Event) {
   const input = event.target as HTMLInputElement
@@ -122,10 +184,14 @@ async function removeAttachment(item: Attachment) {
 }
 async function scrollToEnd() { await nextTick(); if (thread.value) thread.value.scrollTop = thread.value.scrollHeight }
 async function selectPrompt(item: Prompt) { await workbenchApi.usePrompt(item.id); draft.value = item.content; promptOpen.value = false; await nextTick() }
-async function togglePin() { if (!current.value) return; current.value = await workbenchApi.updateConversation(current.value.id, { pinned: !current.value.pinned }); await loadLists() }
+function applyConversationUpdate(updated: Conversation) {
+  if (current.value?.id === updated.id) updated.reasoningEffort = current.value.reasoningEffort
+  current.value = updated
+}
+async function togglePin() { if (!current.value) return; applyConversationUpdate(await workbenchApi.updateConversation(current.value.id, { pinned: !current.value.pinned })); await loadLists() }
 async function rename() {
   if (!current.value) return
-  try { const result = await ElMessageBox.prompt('输入新的对话名称', '重命名对话', { inputValue: current.value.title, inputValidator: (value) => Boolean(value.trim()) || '名称不能为空' }); current.value = await workbenchApi.updateConversation(current.value.id, { title: result.value }); await loadLists() }
+  try { const result = await ElMessageBox.prompt('输入新的对话名称', '重命名对话', { inputValue: current.value.title, inputValidator: (value) => Boolean(value.trim()) || '名称不能为空' }); applyConversationUpdate(await workbenchApi.updateConversation(current.value.id, { title: result.value })); await loadLists() }
   catch (error) { if (error !== 'cancel' && error !== 'close') ElMessage.error(apiMessage(error)) }
 }
 async function remove() {
@@ -137,10 +203,22 @@ function openSettings() { if (!current.value) return; Object.assign(settings, { 
 function selectSettingsModel(value: string) { const selected = models.value.find((item) => item.id === value); if (selected) settings.model = selected.defaultModel }
 async function saveSettings() { if (!current.value) return; try { current.value = await workbenchApi.updateConversation(current.value.id, { ...settings }); settingsOpen.value = false; ElMessage.success('对话设置已更新') } catch (error) { ElMessage.error(apiMessage(error, '保存失败')) } }
 async function copy(content: string) { try { await navigator.clipboard.writeText(content); ElMessage.success('已复制') } catch { ElMessage.error('复制失败') } }
-async function openConversation(id: string) { mobileConversationsOpen.value = false; await router.push(`/chat/${id}`) }
+async function openConversation(id: string) { mobileConversationsOpen.value = false; if (pendingReasoning) void flushReasoning(); await router.push(`/chat/${id}`) }
 
 watch(() => route.params.id, (id) => { mobileConversationsOpen.value = false; attachments.value = []; if (typeof id === 'string') void loadCurrent(id); else current.value = null })
-onMounted(initialize)
+onMounted(() => {
+  void initialize()
+  modelRefreshTimer = window.setInterval(refreshModelsWhenVisible, 60_000)
+  document.addEventListener('visibilitychange', refreshModelsWhenVisible)
+  window.addEventListener('focus', refreshModelsWhenVisible)
+})
+onBeforeUnmount(() => {
+  if (modelRefreshTimer) window.clearInterval(modelRefreshTimer)
+  if (reasoningTimer) window.clearTimeout(reasoningTimer)
+  if (pendingReasoning) void flushReasoning()
+  document.removeEventListener('visibilitychange', refreshModelsWhenVisible)
+  window.removeEventListener('focus', refreshModelsWhenVisible)
+})
 </script>
 
 <template>
@@ -158,6 +236,11 @@ onMounted(initialize)
     </aside>
     <div v-loading="loading" class="chat-main">
       <template v-if="current">
+        <div class="chat-model-bar">
+          <label><span>供应商</span><el-select :model-value="current.providerId" filterable :disabled="sending || switchingModel" aria-label="供应商" @change="changeProvider"><el-option v-for="item in models" :key="item.id" :label="item.name" :value="item.id" /></el-select></label>
+          <label><span>模型</span><el-select :model-value="current.model" filterable :disabled="sending || switchingModel" aria-label="模型" @change="changeSpecificModel"><el-option v-for="item in activeModelNames" :key="item" :label="item" :value="item" /></el-select></label>
+          <el-tooltip content="刷新模型列表"><el-button text :icon="Refresh" :loading="refreshingModels" aria-label="刷新模型列表" @click="refreshModels(true, true)" /></el-tooltip>
+        </div>
         <header class="chat-header"><div class="chat-title"><el-button class="mobile-conversation-toggle" text :icon="Menu" aria-label="打开对话列表" @click="mobileConversationsOpen = true" /><div><h2>{{ current.title }}</h2><span>{{ activeModel?.name || '模型' }} · {{ current.model }}</span></div></div><div><el-button text :icon="current.pinned ? StarFilled : Star" aria-label="置顶" @click="togglePin" /><el-dropdown trigger="click"><el-button text :icon="MoreFilled" aria-label="更多操作" /><template #dropdown><el-dropdown-menu><el-dropdown-item :icon="Edit" @click="rename">重命名</el-dropdown-item><el-dropdown-item :icon="Setting" @click="openSettings">对话设置</el-dropdown-item><el-dropdown-item divided :icon="Delete" @click="remove">删除对话</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div></header>
         <div ref="thread" class="message-thread">
           <div v-if="!current.messages?.length" class="chat-empty"><span class="brand-symbol">AI</span><h3>从一个问题开始</h3><p>{{ current.systemPrompt || '选择提示词，或直接输入你想处理的事情。' }}</p></div>
@@ -175,8 +258,7 @@ onMounted(initialize)
               <el-tooltip content="上传附件"><el-button text :icon="Paperclip" :loading="uploading" aria-label="上传附件" @click="fileInput?.click()" /></el-tooltip>
               <input ref="fileInput" class="file-input" type="file" multiple @change="selectFiles" />
               <el-tooltip content="选择提示词"><el-button text :icon="MagicStick" aria-label="选择提示词" @click="promptOpen = true" /></el-tooltip>
-              <el-select :model-value="current.providerId" class="composer-model" :disabled="sending" aria-label="模型" @change="changeModel"><el-option v-for="item in models" :key="item.id" :label="`${item.name} · ${item.defaultModel}`" :value="item.id" /></el-select>
-              <el-segmented :model-value="current.reasoningEffort" :options="effortOptions" size="small" :disabled="sending" @change="changeReasoning" />
+              <el-select :model-value="current.reasoningEffort" class="composer-effort" size="small" :disabled="sending" aria-label="推理档位" @change="changeReasoning"><el-option v-for="item in effortOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select>
             </div>
             <span>{{ draft.length }}/20000</span>
           </div>
@@ -185,7 +267,7 @@ onMounted(initialize)
       </template>
       <div v-else class="workspace-empty"><span class="brand-symbol">AI</span><h2>今天想完成什么？</h2><p>打开已有对话继续，或者创建一个新对话。</p><div class="workspace-empty-actions"><el-button class="mobile-conversation-toggle" :icon="Menu" @click="mobileConversationsOpen = true">对话列表</el-button><el-button type="primary" :icon="Plus" @click="createConversation">新建对话</el-button></div></div>
     </div>
-    <el-drawer v-model="promptOpen" title="选择提示词" size="min(460px, 94vw)"><div class="prompt-drawer-list"><button v-for="item in prompts" :key="item.id" type="button" @click="selectPrompt(item)"><span><strong>{{ item.title }}</strong><el-tag v-if="item.category" size="small" effect="plain">{{ item.category }}</el-tag></span><p>{{ item.content }}</p></button><el-empty v-if="!prompts.length" description="还没有提示词" /></div></el-drawer>
-    <el-drawer v-model="settingsOpen" title="对话设置" size="min(460px, 94vw)"><el-form label-position="top"><el-form-item label="模型"><el-select v-model="settings.providerId" style="width: 100%" @change="selectSettingsModel"><el-option v-for="item in models" :key="item.id" :label="`${item.name} · ${item.defaultModel}`" :value="item.id" /></el-select></el-form-item><el-form-item label="模型 ID"><el-input v-model="settings.model" /></el-form-item><el-form-item label="推理档位"><el-segmented v-model="settings.reasoningEffort" :options="effortOptions" /></el-form-item><el-form-item label="系统提示词"><el-input v-model="settings.systemPrompt" type="textarea" :rows="8" maxlength="10000" show-word-limit /></el-form-item><el-button type="primary" style="width: 100%" @click="saveSettings">保存设置</el-button></el-form></el-drawer>
+    <el-drawer v-model="promptOpen" title="选择提示词" size="min(320px, 78vw)"><div class="prompt-drawer-list"><button v-for="item in prompts" :key="item.id" type="button" @click="selectPrompt(item)"><span><strong>{{ item.title }}</strong><el-tag v-if="item.category" size="small" effect="plain">{{ item.category }}</el-tag></span><p>{{ item.content }}</p></button><el-empty v-if="!prompts.length" description="还没有提示词" /></div></el-drawer>
+    <el-drawer v-model="settingsOpen" title="对话设置" size="min(460px, 94vw)"><el-form label-position="top"><el-form-item label="供应商"><el-select v-model="settings.providerId" filterable style="width: 100%" @change="selectSettingsModel"><el-option v-for="item in models" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item><el-form-item label="模型"><el-select v-model="settings.model" filterable style="width: 100%"><el-option v-for="item in settingsModelNames" :key="item" :label="item" :value="item" /></el-select></el-form-item><el-form-item label="推理档位"><el-segmented v-model="settings.reasoningEffort" :options="effortOptions" /></el-form-item><el-form-item label="系统提示词"><el-input v-model="settings.systemPrompt" type="textarea" :rows="8" maxlength="10000" show-word-limit /></el-form-item><el-button type="primary" style="width: 100%" @click="saveSettings">保存设置</el-button></el-form></el-drawer>
   </section>
 </template>

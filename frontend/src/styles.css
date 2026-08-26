@@ -104,6 +104,11 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
 .conversation-list small { color: #818b88; font-size: 11px; }
 .conversation-list b { color: #84908c; font-size: 10px; font-weight: 500; text-align: right; }
 .chat-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #fff; }
+.chat-model-bar { display: grid; grid-template-columns: minmax(160px, 220px) minmax(220px, 320px) 34px; align-items: end; gap: 10px; min-height: 64px; padding: 9px 24px; border-bottom: 1px solid #e5e9e7; background: #fafbfa; }
+.chat-model-bar label { display: grid; min-width: 0; gap: 4px; }
+.chat-model-bar label > span { color: #74807d; font-size: 10px; font-weight: 650; }
+.chat-model-bar .el-select { width: 100%; }
+.chat-model-bar .el-select__wrapper { min-height: 30px; }
 .chat-header { display: flex; align-items: center; justify-content: space-between; min-height: 68px; padding: 10px 24px; border-bottom: 1px solid #e5e9e7; }
 .chat-title { display: flex; align-items: center; min-width: 0; }
 .chat-title > div { min-width: 0; }
@@ -135,8 +140,8 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
 .composer:focus-within { border-color: #176b55; }
 .composer-tools { display: flex; align-items: center; justify-content: space-between; min-height: 32px; gap: 10px; }
 .composer-actions { display: flex; align-items: center; min-width: 0; gap: 4px; }
-.composer-model { width: 210px; }
-.composer-model .el-select__wrapper { min-height: 28px; font-size: 11px; }
+.composer-effort { width: 104px; }
+.composer-effort .el-select__wrapper { min-height: 28px; font-size: 11px; }
 .composer-tools span { color: #929b98; font-size: 10px; }
 .composer .el-textarea__inner { padding: 5px 0; border: 0; box-shadow: none !important; }
 .send-button { position: absolute; right: 11px; bottom: 11px; }
@@ -181,6 +186,10 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
 .callback-loading .is-loading { color: #176b55; font-size: 22px; }
 .el-drawer__body { padding: 16px; }
 .drawer-sidebar { width: 100%; min-width: 0; margin: -16px; height: calc(100% + 32px); }
+.drawer-mobile-header { display: flex; align-items: center; justify-content: space-between; min-height: 48px; margin: 0 0 10px; padding-left: 8px; border-bottom: 1px solid #31534b; }
+.drawer-mobile-header strong { font-size: 14px; }
+.drawer-mobile-header .el-button { color: #fff; }
+.drawer-sidebar .brand { margin-bottom: 18px; }
 .user-table-wrap { overflow: hidden; border: 1px solid #dce3e0; border-radius: 7px; background: #fff; }
 .user-cell { display: flex; align-items: center; gap: 10px; }
 .user-cell > span { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 6px; color: #176b55; background: #e8f0ee; }
@@ -218,6 +227,10 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
   .conversation-scrim { position: absolute; inset: 0; z-index: 21; display: block; padding: 0; border: 0; background: rgba(17, 28, 25, .28); }
   .conversation-list button { grid-template-columns: 22px minmax(0, 1fr) 22px; justify-items: initial; min-height: 60px; }
   .mobile-conversation-toggle { display: inline-flex; }
+  .chat-model-bar { grid-template-columns: minmax(0, .82fr) minmax(0, 1.18fr) 32px; gap: 6px; min-height: 60px; padding: 7px 10px; }
+  .chat-model-bar label { gap: 3px; }
+  .chat-model-bar label > span { font-size: 9px; }
+  .chat-model-bar .el-select__wrapper { min-height: 30px; padding: 4px 7px; font-size: 11px; }
   .chat-header { min-height: 60px; padding: 8px 12px; }
   .chat-title { max-width: calc(100vw - 104px); }
   .chat-title > .el-button { flex: 0 0 auto; margin-right: 2px; }
@@ -231,8 +244,7 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
   .composer { width: calc(100% - 20px); margin-bottom: 10px; box-shadow: 0 4px 16px rgba(24, 40, 36, .08); }
   .composer-tools { display: block; }
   .composer-actions { display: grid; grid-template-columns: 32px 32px minmax(0, 1fr); width: 100%; gap: 4px; }
-  .composer-actions > .el-segmented { grid-column: 1 / -1; width: 100%; margin-top: 3px; }
-  .composer-model { width: 100%; min-width: 0; }
+  .composer-effort { width: 100%; min-width: 0; }
   .composer-tools > span { display: none; }
   .login-panel { width: calc(100% - 40px); }
   .login-brand { top: 24px; }

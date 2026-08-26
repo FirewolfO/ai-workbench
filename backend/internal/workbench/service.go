@@ -36,17 +36,19 @@ var (
 )
 
 const (
-	maxAttachmentBytes = 8 << 20
-	attachmentTTL      = time.Hour
+	maxAttachmentBytes          = 8 << 20
+	attachmentTTL               = time.Hour
+	modelCatalogRefreshInterval = 5 * time.Minute
 )
 
 type Service struct {
-	database      *store.Store
-	vault         *security.Vault
-	models        llm.Client
-	attachmentDir string
-	inflightMu    sync.Mutex
-	inflight      map[string]context.CancelFunc
+	database       *store.Store
+	vault          *security.Vault
+	models         llm.Client
+	attachmentDir  string
+	modelRefreshMu sync.Mutex
+	inflightMu     sync.Mutex
+	inflight       map[string]context.CancelFunc
 }
 
 type ProviderInput struct {
@@ -97,8 +99,9 @@ type Dashboard struct {
 }
 
 type ProviderTest struct {
-	OK        bool  `json:"ok"`
-	LatencyMs int64 `json:"latencyMs"`
+	OK         bool  `json:"ok"`
+	LatencyMs  int64 `json:"latencyMs"`
+	ModelCount int   `json:"modelCount"`
 }
 
 type NewsSummaryResult struct {
@@ -107,9 +110,11 @@ type NewsSummaryResult struct {
 }
 
 type AvailableModel struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	DefaultModel string `json:"defaultModel"`
+	ID              string     `json:"id"`
+	Name            string     `json:"name"`
+	DefaultModel    string     `json:"defaultModel"`
+	Models          []string   `json:"models"`
+	ModelsUpdatedAt *time.Time `json:"modelsUpdatedAt,omitempty"`
 }
 
 func New(database *store.Store, vault *security.Vault, models llm.Client, attachmentDirs ...string) *Service {
@@ -177,7 +182,7 @@ func (s *Service) Providers(actor identity.Actor) ([]model.Provider, error) {
 		return nil, err
 	}
 	for index := range providers {
-		providers[index].HasAPIKey = providers[index].APIKeyCiphertext != ""
+		decorateProvider(&providers[index])
 	}
 	return providers, nil
 }
@@ -189,9 +194,46 @@ func (s *Service) AvailableModels(_ identity.Actor) ([]AvailableModel, error) {
 	}
 	result := make([]AvailableModel, 0, len(providers))
 	for _, provider := range providers {
-		result = append(result, AvailableModel{ID: provider.ID, Name: provider.Name, DefaultModel: provider.DefaultModel})
+		result = append(result, AvailableModel{
+			ID: provider.ID, Name: provider.Name, DefaultModel: provider.DefaultModel,
+			Models: providerModels(&provider), ModelsUpdatedAt: provider.ModelsUpdatedAt,
+		})
 	}
 	return result, nil
+}
+
+func (s *Service) RefreshAvailableModels(ctx context.Context, _ identity.Actor) error {
+	catalogClient, ok := s.models.(llm.ModelCatalogClient)
+	if !ok || !s.modelRefreshMu.TryLock() {
+		return nil
+	}
+	defer s.modelRefreshMu.Unlock()
+
+	var providers []model.Provider
+	if err := s.database.DB.Where("enabled = ? AND available = ?", true, true).Order("created_at ASC").Find(&providers).Error; err != nil {
+		return err
+	}
+	now := time.Now()
+	for index := range providers {
+		provider := &providers[index]
+		if provider.ModelsUpdatedAt != nil && now.Sub(*provider.ModelsUpdatedAt) < modelCatalogRefreshInterval {
+			continue
+		}
+		key, err := s.providerKey(provider)
+		if err != nil {
+			continue
+		}
+		requestContext, cancel := context.WithTimeout(ctx, 12*time.Second)
+		models, err := catalogClient.Models(requestContext, provider.BaseURL, key)
+		cancel()
+		if err != nil {
+			continue
+		}
+		if err := s.recordProviderCatalog(provider, now, models); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) CreateProvider(actor identity.Actor, input ProviderInput) (*model.Provider, error) {
@@ -206,7 +248,7 @@ func (s *Service) CreateProvider(actor identity.Actor, input ProviderInput) (*mo
 	if err := s.database.DB.Create(provider).Error; err != nil {
 		return nil, err
 	}
-	provider.HasAPIKey = provider.APIKeyCiphertext != ""
+	decorateProvider(provider)
 	return provider, nil
 }
 
@@ -226,7 +268,7 @@ func (s *Service) UpdateProvider(actor identity.Actor, id string, input Provider
 	if err := s.database.DB.Save(next).Error; err != nil {
 		return nil, err
 	}
-	next.HasAPIKey = next.APIKeyCiphertext != ""
+	decorateProvider(next)
 	return next, nil
 }
 
@@ -259,26 +301,27 @@ func (s *Service) TestProvider(ctx context.Context, actor identity.Actor, id str
 	testedAt := time.Now()
 	key, err := s.providerKey(provider)
 	if err != nil {
-		if saveErr := s.recordProviderTest(provider, testedAt, 0, err); saveErr != nil {
+		if saveErr := s.recordProviderTest(provider, testedAt, 0, nil, err); saveErr != nil {
 			return nil, saveErr
 		}
 		return nil, fmt.Errorf("%w: %v", ErrProvider, err)
 	}
-	latency, err := s.models.Test(ctx, provider.BaseURL, key, provider.DefaultModel)
+	probe, err := s.models.Test(ctx, provider.BaseURL, key, provider.DefaultModel)
 	if err != nil {
-		if saveErr := s.recordProviderTest(provider, testedAt, 0, err); saveErr != nil {
+		if saveErr := s.recordProviderTest(provider, testedAt, 0, nil, err); saveErr != nil {
 			return nil, saveErr
 		}
 		return nil, fmt.Errorf("%w: %v", ErrProvider, err)
 	}
-	latencyMs := latency.Milliseconds()
-	if err := s.recordProviderTest(provider, testedAt, latencyMs, nil); err != nil {
+	latencyMs := probe.Latency.Milliseconds()
+	models := normalizeModelCatalog(provider.DefaultModel, probe.Models)
+	if err := s.recordProviderTest(provider, testedAt, latencyMs, models, nil); err != nil {
 		return nil, err
 	}
-	return &ProviderTest{OK: true, LatencyMs: latencyMs}, nil
+	return &ProviderTest{OK: true, LatencyMs: latencyMs, ModelCount: len(models)}, nil
 }
 
-func (s *Service) recordProviderTest(provider *model.Provider, testedAt time.Time, latencyMs int64, testErr error) error {
+func (s *Service) recordProviderTest(provider *model.Provider, testedAt time.Time, latencyMs int64, models []string, testErr error) error {
 	message := ""
 	available := testErr == nil
 	if testErr != nil {
@@ -287,12 +330,63 @@ func (s *Service) recordProviderTest(provider *model.Provider, testedAt time.Tim
 			message = message[:2000]
 		}
 	}
-	return s.database.DB.Model(provider).Updates(map[string]any{
+	updates := map[string]any{
 		"available":            available,
 		"last_tested_at":       testedAt,
 		"last_test_latency_ms": latencyMs,
 		"last_test_error":      message,
+	}
+	if available {
+		updates["model_catalog_json"] = encodeModelCatalog(provider.DefaultModel, models)
+		updates["models_updated_at"] = testedAt
+	}
+	return s.database.DB.Model(provider).Updates(updates).Error
+}
+
+func (s *Service) recordProviderCatalog(provider *model.Provider, updatedAt time.Time, models []string) error {
+	return s.database.DB.Model(provider).Updates(map[string]any{
+		"model_catalog_json": encodeModelCatalog(provider.DefaultModel, models),
+		"models_updated_at":  updatedAt,
 	}).Error
+}
+
+func decorateProvider(provider *model.Provider) {
+	provider.HasAPIKey = provider.APIKeyCiphertext != ""
+	provider.Models = providerModels(provider)
+}
+
+func providerModels(provider *model.Provider) []string {
+	var catalog []string
+	if strings.TrimSpace(provider.ModelCatalogJSON) != "" {
+		_ = json.Unmarshal([]byte(provider.ModelCatalogJSON), &catalog)
+	}
+	return normalizeModelCatalog(provider.DefaultModel, catalog)
+}
+
+func encodeModelCatalog(defaultModel string, models []string) string {
+	payload, err := json.Marshal(normalizeModelCatalog(defaultModel, models))
+	if err != nil {
+		return "[]"
+	}
+	return string(payload)
+}
+
+func normalizeModelCatalog(defaultModel string, models []string) []string {
+	result := make([]string, 0, len(models)+1)
+	seen := make(map[string]bool, len(models)+1)
+	appendModel := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || len(value) > 160 || seen[value] || len(result) >= 2000 {
+			return
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	appendModel(defaultModel)
+	for _, item := range models {
+		appendModel(item)
+	}
+	return result
 }
 
 func (s *Service) SummarizeNews(ctx context.Context, actor identity.Actor, articleIDs []string) (*NewsSummaryResult, error) {
@@ -399,9 +493,14 @@ func (s *Service) providerFromInput(owner string, input ProviderInput, current *
 	if err != nil || !target.IsAbs() || (target.Scheme != "http" && target.Scheme != "https") || target.Host == "" || target.User != nil {
 		return nil, ErrInvalid
 	}
-	provider := &model.Provider{OwnerID: owner, Name: input.Name, BaseURL: input.BaseURL, DefaultModel: input.DefaultModel, Enabled: true}
+	provider := &model.Provider{
+		OwnerID: owner, Name: input.Name, BaseURL: input.BaseURL, DefaultModel: input.DefaultModel,
+		ModelCatalogJSON: encodeModelCatalog(input.DefaultModel, nil), Enabled: true,
+	}
 	if current != nil {
 		provider.APIKeyCiphertext = current.APIKeyCiphertext
+		provider.ModelCatalogJSON = current.ModelCatalogJSON
+		provider.ModelsUpdatedAt = current.ModelsUpdatedAt
 		provider.Enabled = current.Enabled
 		provider.Available = current.Available
 		provider.LastTestedAt = current.LastTestedAt
@@ -423,6 +522,8 @@ func (s *Service) providerFromInput(owner string, input ProviderInput, current *
 		provider.LastTestedAt = nil
 		provider.LastTestLatencyMs = 0
 		provider.LastTestError = ""
+		provider.ModelCatalogJSON = encodeModelCatalog(provider.DefaultModel, nil)
+		provider.ModelsUpdatedAt = nil
 	}
 	return provider, nil
 }

@@ -16,6 +16,8 @@ export interface Provider {
   name: string
   baseUrl: string
   defaultModel: string
+  models: string[]
+  modelsUpdatedAt?: string
   enabled: boolean
   available: boolean
   lastTestedAt?: string
@@ -79,7 +81,7 @@ export interface Dashboard {
 export interface ProviderInput { name: string; baseUrl: string; defaultModel: string; apiKey: string; enabled?: boolean }
 export interface PromptInput { title: string; description: string; category: string; content: string; favorite?: boolean }
 export type ReasoningEffort = 'fast' | 'medium' | 'high'
-export interface AvailableModel { id: string; name: string; defaultModel: string }
+export interface AvailableModel { id: string; name: string; defaultModel: string; models: string[]; modelsUpdatedAt?: string }
 export interface Attachment { id: string; name: string; contentType: string; size: number; expiresAt: string }
 
 export interface NewsArticle {

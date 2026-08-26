@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -45,9 +46,18 @@ type CompletionResult struct {
 	Latency          time.Duration
 }
 
+type ConnectionTest struct {
+	Latency time.Duration
+	Models  []string
+}
+
 type Client interface {
 	Complete(context.Context, CompletionRequest) (*CompletionResult, error)
-	Test(context.Context, string, string, string) (time.Duration, error)
+	Test(context.Context, string, string, string) (*ConnectionTest, error)
+}
+
+type ModelCatalogClient interface {
+	Models(context.Context, string, string) ([]string, error)
 }
 
 type HTTPClient struct{ client *http.Client }
@@ -126,30 +136,28 @@ func providerReasoningEffort(value string) string {
 	}
 }
 
-func (c *HTTPClient) Test(ctx context.Context, baseURL, apiKey, model string) (time.Duration, error) {
+func (c *HTTPClient) Models(ctx context.Context, baseURL, apiKey string) ([]string, error) {
 	target, err := endpoint(baseURL, "models")
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	if strings.TrimSpace(apiKey) != "" {
 		request.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	started := time.Now()
 	response, err := c.client.Do(request)
-	latency := time.Since(started)
 	if err != nil {
-		return 0, fmt.Errorf("模型服务连接失败: %w", err)
+		return nil, fmt.Errorf("模型服务连接失败: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return 0, fmt.Errorf("模型服务返回 %d", response.StatusCode)
+		return nil, fmt.Errorf("模型服务返回 %d", response.StatusCode)
 	}
 	if !isJSON(response.Header.Get("Content-Type")) {
-		return 0, fmt.Errorf("模型列表返回 %s 而不是 JSON，请检查 Base URL 是否指向 API 根路径（通常以 /v1 结尾）", contentType(response.Header.Get("Content-Type")))
+		return nil, fmt.Errorf("模型列表返回 %s 而不是 JSON，请检查 Base URL 是否指向 API 根路径（通常以 /v1 结尾）", contentType(response.Header.Get("Content-Type")))
 	}
 	var models struct {
 		Data []struct {
@@ -157,16 +165,39 @@ func (c *HTTPClient) Test(ctx context.Context, baseURL, apiKey, model string) (t
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&models); err != nil {
-		return 0, fmt.Errorf("模型列表返回了无效 JSON")
+		return nil, fmt.Errorf("模型列表返回了无效 JSON")
 	}
-	completion, err := c.Complete(ctx, CompletionRequest{
+	unique := make(map[string]bool, len(models.Data))
+	result := make([]string, 0, len(models.Data))
+	for _, item := range models.Data {
+		id := strings.TrimSpace(item.ID)
+		if id == "" || unique[id] || len(id) > 160 {
+			continue
+		}
+		unique[id] = true
+		result = append(result, id)
+	}
+	sort.Strings(result)
+	if len(result) > 2000 {
+		result = result[:2000]
+	}
+	return result, nil
+}
+
+func (c *HTTPClient) Test(ctx context.Context, baseURL, apiKey, model string) (*ConnectionTest, error) {
+	started := time.Now()
+	models, err := c.Models(ctx, baseURL, apiKey)
+	if err != nil {
+		return nil, err
+	}
+	_, err = c.Complete(ctx, CompletionRequest{
 		BaseURL: baseURL, APIKey: apiKey, Model: model,
 		Messages: []Message{{Role: "user", Content: "Reply with OK."}}, Temperature: 0,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("模型对话测试失败: %w", err)
+		return nil, fmt.Errorf("模型对话测试失败: %w", err)
 	}
-	return latency + completion.Latency, nil
+	return &ConnectionTest{Latency: time.Since(started), Models: models}, nil
 }
 
 func isJSON(value string) bool {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChatLineRound, Compass, Connection, DataAnalysis, Expand, MagicStick, Menu as MenuIcon, SwitchButton, TrendCharts, User, UserFilled } from '@element-plus/icons-vue'
+import { ChatLineRound, Close, Compass, Connection, DataAnalysis, Expand, MagicStick, Menu as MenuIcon, SwitchButton, TrendCharts, User, UserFilled } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
@@ -31,8 +31,9 @@ async function logout() { await auth.logout(); await router.replace('/login') }
       </el-menu>
       <div class="sidebar-status"><span></span>{{ auth.user?.source === 'internal' ? '内部账号' : 'People SSO' }}</div>
     </aside>
-    <el-drawer v-model="drawerOpen" direction="ltr" :with-header="false" size="248px">
+    <el-drawer v-model="drawerOpen" direction="ltr" :with-header="false" size="min(220px, 74vw)">
       <aside class="app-sidebar drawer-sidebar">
+        <div class="drawer-mobile-header"><strong>功能</strong><el-button text :icon="Close" aria-label="关闭导航" @click="drawerOpen = false" /></div>
         <div class="brand"><span class="brand-symbol">AI</span><span><strong>我的工作台</strong><small>AI WORKBENCH</small></span></div>
         <el-menu :default-active="route.path.startsWith('/chat') ? '/chat' : route.path" router class="nav-menu" @select="drawerOpen = false">
           <el-menu-item v-for="item in items" :key="item.path" :index="item.path"><el-icon><component :is="item.icon" /></el-icon><span>{{ item.label }}</span></el-menu-item>

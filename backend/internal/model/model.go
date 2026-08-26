@@ -13,6 +13,8 @@ type Provider struct {
 	Name              string     `gorm:"size:100;not null" json:"name"`
 	BaseURL           string     `gorm:"size:500;not null" json:"baseUrl"`
 	DefaultModel      string     `gorm:"size:160;not null" json:"defaultModel"`
+	ModelCatalogJSON  string     `gorm:"type:text;not null;default:'[]'" json:"-"`
+	ModelsUpdatedAt   *time.Time `json:"modelsUpdatedAt,omitempty"`
 	APIKeyCiphertext  string     `gorm:"type:text;not null" json:"-"`
 	Enabled           bool       `gorm:"not null;default:true" json:"enabled"`
 	Available         bool       `gorm:"not null;default:false;index" json:"available"`
@@ -22,6 +24,7 @@ type Provider struct {
 	CreatedAt         time.Time  `json:"createdAt"`
 	UpdatedAt         time.Time  `json:"updatedAt"`
 	HasAPIKey         bool       `gorm:"-" json:"hasApiKey"`
+	Models            []string   `gorm:"-" json:"models"`
 }
 
 type Prompt struct {

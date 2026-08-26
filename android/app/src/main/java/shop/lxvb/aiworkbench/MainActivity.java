@@ -12,6 +12,8 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.Settings;
+import android.util.Log;
+import android.view.Gravity;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
 import android.webkit.MimeTypeMap;
@@ -25,7 +27,10 @@ import android.webkit.WebViewClient;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import org.json.JSONObject;
@@ -40,6 +45,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
+    private static final String TAG = "AIWorkbench";
     private static final String APP_URL = "https://ai.lxvb.top";
     static final String UPDATE_PREFERENCES = "app_update";
     private static final int FILE_CHOOSER_REQUEST = 4102;
@@ -54,8 +60,6 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().setStatusBarColor(Color.WHITE);
-        getWindow().setNavigationBarColor(Color.WHITE);
         getWindow().setNavigationBarContrastEnforced(false);
         WindowInsetsController bars = getWindow().getInsetsController();
         if (bars != null) {
@@ -66,25 +70,29 @@ public final class MainActivity extends Activity {
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.WHITE);
-        webView = new WebView(this);
-        webView.setBackgroundColor(Color.rgb(244, 246, 245));
-        root.addView(webView, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         root.setOnApplyWindowInsetsListener((view, windowInsets) -> {
-            Insets safeArea = Insets.max(
-                    windowInsets.getInsets(WindowInsets.Type.systemBars()),
-                    windowInsets.getInsets(WindowInsets.Type.displayCutout()));
-            FrameLayout.LayoutParams layout = (FrameLayout.LayoutParams) webView.getLayoutParams();
-            if (layout.leftMargin != safeArea.left || layout.topMargin != safeArea.top
-                    || layout.rightMargin != safeArea.right || layout.bottomMargin != safeArea.bottom) {
-                layout.setMargins(safeArea.left, safeArea.top, safeArea.right, safeArea.bottom);
-                webView.setLayoutParams(layout);
+            Insets safeArea = windowInsets.getInsets(
+                    WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            if (view.getPaddingLeft() != safeArea.left || view.getPaddingTop() != safeArea.top
+                    || view.getPaddingRight() != safeArea.right || view.getPaddingBottom() != safeArea.bottom) {
+                view.setPadding(safeArea.left, safeArea.top, safeArea.right, safeArea.bottom);
             }
-            return windowInsets;
+            return WindowInsets.CONSUMED;
         });
         setContentView(root);
         root.requestApplyInsets();
-        configureWebView();
+
+        try {
+            webView = new WebView(this);
+            webView.setBackgroundColor(Color.rgb(244, 246, 245));
+            root.addView(webView, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            configureWebView();
+        } catch (RuntimeException error) {
+            showStartupError(root, error);
+            checkForUpdate();
+            return;
+        }
         getOnBackInvokedDispatcher().registerOnBackInvokedCallback(0, this::handleBack);
 
         if (savedInstanceState == null) {
@@ -93,6 +101,39 @@ public final class MainActivity extends Activity {
             webView.restoreState(savedInstanceState);
         }
         checkForUpdate();
+    }
+
+    private void showStartupError(FrameLayout root, RuntimeException error) {
+        Log.e(TAG, "Unable to initialize the system WebView", error);
+        if (webView != null) {
+            root.removeView(webView);
+            webView.destroy();
+            webView = null;
+        }
+
+        int spacing = Math.round(24 * getResources().getDisplayMetrics().density);
+        LinearLayout message = new LinearLayout(this);
+        message.setOrientation(LinearLayout.VERTICAL);
+        message.setGravity(Gravity.CENTER);
+        message.setPadding(spacing, spacing, spacing, spacing);
+
+        TextView description = new TextView(this);
+        description.setText(R.string.webview_startup_failed);
+        description.setTextColor(Color.rgb(24, 33, 31));
+        description.setTextSize(16);
+        description.setGravity(Gravity.CENTER);
+        message.addView(description, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        Button retry = new Button(this);
+        retry.setText(R.string.retry);
+        retry.setOnClickListener(view -> recreate());
+        LinearLayout.LayoutParams retryLayout = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        retryLayout.topMargin = spacing;
+        message.addView(retry, retryLayout);
+        root.addView(message, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
     private void configureWebView() {
@@ -116,7 +157,7 @@ public final class MainActivity extends Activity {
     }
 
     private void handleBack() {
-        if (webView.canGoBack()) {
+        if (webView != null && webView.canGoBack()) {
             webView.goBack();
         } else {
             finish();
@@ -125,7 +166,7 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onSaveInstanceState(Bundle state) {
-        webView.saveState(state);
+        if (webView != null) webView.saveState(state);
         super.onSaveInstanceState(state);
     }
 
@@ -135,10 +176,13 @@ public final class MainActivity extends Activity {
             fileCallback.onReceiveValue(null);
             fileCallback = null;
         }
-        webView.stopLoading();
-        webView.setWebChromeClient(null);
-        webView.setWebViewClient(null);
-        webView.destroy();
+        if (webView != null) {
+            webView.stopLoading();
+            webView.setWebChromeClient(null);
+            webView.setWebViewClient(null);
+            webView.destroy();
+            webView = null;
+        }
         networkExecutor.shutdownNow();
         super.onDestroy();
     }

@@ -16,6 +16,8 @@ export interface Provider {
   name: string
   baseUrl: string
   defaultModel: string
+  protocol: ProviderProtocol
+  webSearchEnabled: boolean
   models: string[]
   modelsUpdatedAt?: string
   enabled: boolean
@@ -78,10 +80,11 @@ export interface Dashboard {
   recent: Conversation[]
 }
 
-export interface ProviderInput { name: string; baseUrl: string; defaultModel: string; apiKey: string; enabled?: boolean }
+export type ProviderProtocol = 'chat_completions' | 'responses'
+export interface ProviderInput { name: string; baseUrl: string; defaultModel: string; protocol: ProviderProtocol; webSearchEnabled: boolean; apiKey: string; enabled?: boolean }
 export interface PromptInput { title: string; description: string; category: string; content: string; favorite?: boolean }
-export type ReasoningEffort = 'fast' | 'medium' | 'high'
-export interface AvailableModel { id: string; name: string; defaultModel: string; models: string[]; modelsUpdatedAt?: string }
+export type ReasoningEffort = 'fast' | 'medium' | 'high' | 'xhigh'
+export interface AvailableModel { id: string; name: string; defaultModel: string; models: string[]; webSearchEnabled: boolean; modelsUpdatedAt?: string }
 export interface Attachment { id: string; name: string; contentType: string; size: number; expiresAt: string }
 
 export interface NewsArticle {

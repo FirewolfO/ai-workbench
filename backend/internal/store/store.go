@@ -17,7 +17,7 @@ type Store struct{ DB *gorm.DB }
 const builtinProvidersMigration = "builtin-providers-v1"
 
 var builtinProviders = []model.Provider{
-	{ID: "prv_builtin_openai", OwnerID: "admin", Name: "OpenAI", BaseURL: "https://api.openai.com/v1", DefaultModel: "gpt-5.6-terra"},
+	{ID: "prv_builtin_openai", OwnerID: "admin", Name: "OpenAI", BaseURL: "https://api.openai.com/v1", DefaultModel: "gpt-5.6-terra", Protocol: "responses", WebSearchEnabled: true},
 	{ID: "prv_builtin_gemini", OwnerID: "admin", Name: "Google Gemini", BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai", DefaultModel: "gemini-3.7-flash"},
 	{ID: "prv_builtin_deepseek", OwnerID: "admin", Name: "DeepSeek", BaseURL: "https://api.deepseek.com", DefaultModel: "deepseek-v4-flash"},
 	{ID: "prv_builtin_qwen", OwnerID: "admin", Name: "阿里云百炼 · 通义千问", BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1", DefaultModel: "qwen3.7-plus"},
@@ -82,6 +82,7 @@ func (s *Store) SeedBuiltinProviders() error {
 			values := map[string]any{
 				"id": provider.ID, "owner_id": provider.OwnerID, "name": provider.Name,
 				"base_url": provider.BaseURL, "default_model": provider.DefaultModel,
+				"protocol": provider.Protocol, "web_search_enabled": provider.WebSearchEnabled,
 				"api_key_ciphertext": "", "enabled": false, "created_at": now, "updated_at": now,
 			}
 			if err := tx.Model(&model.Provider{}).Clauses(clause.OnConflict{DoNothing: true}).Create(values).Error; err != nil {

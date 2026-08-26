@@ -13,6 +13,8 @@ type Provider struct {
 	Name              string     `gorm:"size:100;not null" json:"name"`
 	BaseURL           string     `gorm:"size:500;not null" json:"baseUrl"`
 	DefaultModel      string     `gorm:"size:160;not null" json:"defaultModel"`
+	Protocol          string     `gorm:"size:32;not null;default:chat_completions" json:"protocol"`
+	WebSearchEnabled  bool       `gorm:"not null;default:false" json:"webSearchEnabled"`
 	ModelCatalogJSON  string     `gorm:"type:text;not null;default:'[]'" json:"-"`
 	ModelsUpdatedAt   *time.Time `json:"modelsUpdatedAt,omitempty"`
 	APIKeyCiphertext  string     `gorm:"type:text;not null" json:"-"`

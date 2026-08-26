@@ -6,7 +6,8 @@
 
 - 管理员统一维护 OpenAI Compatible 模型连接，支持连接测试、启停与默认模型配置
 - 模型 API Key 仅在后端使用 AES-GCM 加密保存，接口只返回是否已配置
-- 多轮对话、系统提示词、模型切换、快速/中等/高三档推理、停止生成、自动命名、搜索、置顶、重命名和删除
+- 多轮对话、系统提示词、模型切换、快速/中等/高/极高四档推理、停止生成、自动命名、搜索、置顶、重命名和删除
+- 支持 OpenAI Responses API 原生联网搜索，模型可按问题主动检索实时信息并在回答中保留来源链接
 - 图片及文件附件随单次消息发送，模型调用读取后即从服务器删除原文件
 - Markdown 回答预览、回答复制、响应延迟及 Token 用量展示
 - 个人提示词库，支持分类、搜索、收藏、使用次数及一键带入对话
@@ -113,12 +114,23 @@ cd android
 
 ## 模型连接
 
-模型服务需兼容以下接口：
+模型连接支持两种调用协议。所有连接都需要模型列表接口：
 
 ```text
 GET  {baseUrl}/models
-POST {baseUrl}/chat/completions
 ```
+
+选择 `Chat Completions` 时调用 `POST {baseUrl}/chat/completions`，适合 Ollama、DeepSeek 及大多数传统 OpenAI Compatible 服务。选择 `Responses` 时调用 `POST {baseUrl}/responses`，可以按连接开启原生 Web Search；启用后，连接测试会强制执行一次联网搜索，确认上游确实返回 `web_search_call` 后才标记为“可使用”。普通对话使用自动工具选择，不需要联网的问题不会被强制搜索。
+
+Sub2API 的 Codex/OpenAI 账号连接应使用服务根地址，而不是追加 `/v1`：
+
+```text
+Base URL: http://<sub2api-host>:<port>
+调用协议: Responses
+联网搜索: 开启
+```
+
+Chat Completions 连接通常仍使用以 `/v1` 结尾的 Base URL。两种协议不会自动混用，避免不支持 Responses 的旧连接受到影响。
 
 云端 OpenAI Compatible 服务通常需要 API Key；Ollama 等内网模型可留空。只有内部管理员能够创建和修改连接，普通用户只能获取已启用连接的名称与默认模型。生产环境仍应通过网络策略限制后端可访问的模型服务地址。
 

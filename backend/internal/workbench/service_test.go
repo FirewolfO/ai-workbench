@@ -19,7 +19,7 @@ type fakeModels struct{}
 func (fakeModels) Complete(_ context.Context, request llm.CompletionRequest) (*llm.CompletionResult, error) {
 	return &llm.CompletionResult{Content: "回答", Model: request.Model, PromptTokens: 8, CompletionTokens: 3, Latency: 20 * time.Millisecond}, nil
 }
-func (fakeModels) Test(context.Context, string, string, string) (*llm.ConnectionTest, error) {
+func (fakeModels) Test(context.Context, llm.ConnectionTestRequest) (*llm.ConnectionTest, error) {
 	return &llm.ConnectionTest{Latency: 10 * time.Millisecond, Models: []string{"model"}}, nil
 }
 
@@ -58,7 +58,7 @@ type summaryModels struct{}
 func (summaryModels) Complete(_ context.Context, _ llm.CompletionRequest) (*llm.CompletionResult, error) {
 	return &llm.CompletionResult{Content: "```json\n[{\"id\":\"news_one\",\"summary\":\"这是一条经过压缩的中文人工智能热点概要，说明事件内容及其主要价值。\"}]\n```", Model: "model"}, nil
 }
-func (summaryModels) Test(context.Context, string, string, string) (*llm.ConnectionTest, error) {
+func (summaryModels) Test(context.Context, llm.ConnectionTestRequest) (*llm.ConnectionTest, error) {
 	return &llm.ConnectionTest{Models: []string{"model"}}, nil
 }
 
@@ -189,7 +189,7 @@ type providerTestModels struct {
 func (*providerTestModels) Complete(_ context.Context, request llm.CompletionRequest) (*llm.CompletionResult, error) {
 	return &llm.CompletionResult{Content: "OK", Model: request.Model}, nil
 }
-func (models *providerTestModels) Test(context.Context, string, string, string) (*llm.ConnectionTest, error) {
+func (models *providerTestModels) Test(context.Context, llm.ConnectionTestRequest) (*llm.ConnectionTest, error) {
 	return &llm.ConnectionTest{Latency: 12 * time.Millisecond, Models: append([]string(nil), models.catalog...)}, models.testErr
 }
 func (models *providerTestModels) Models(context.Context, string, string) ([]string, error) {
@@ -269,14 +269,51 @@ func TestRefreshAvailableModelsUpdatesStaleCatalog(t *testing.T) {
 	}
 }
 
-type captureModels struct{ request llm.CompletionRequest }
+type captureModels struct {
+	request     llm.CompletionRequest
+	testRequest llm.ConnectionTestRequest
+}
 
 func (models *captureModels) Complete(_ context.Context, request llm.CompletionRequest) (*llm.CompletionResult, error) {
 	models.request = request
 	return &llm.CompletionResult{Content: "done", Model: request.Model}, nil
 }
-func (*captureModels) Test(context.Context, string, string, string) (*llm.ConnectionTest, error) {
+func (models *captureModels) Test(_ context.Context, request llm.ConnectionTestRequest) (*llm.ConnectionTest, error) {
+	models.testRequest = request
 	return &llm.ConnectionTest{Models: []string{"model"}}, nil
+}
+
+func TestResponsesProviderConfigurationFlowsToCompletion(t *testing.T) {
+	models := &captureModels{}
+	service := testServiceWithModels(t, models)
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
+	webSearch := true
+	provider := createAvailableProvider(t, service, admin, ProviderInput{
+		Name: "Sub2API", BaseURL: "http://models.example", DefaultModel: "model", Protocol: "responses", WebSearchEnabled: &webSearch,
+	})
+	if provider.Protocol != "responses" || !provider.WebSearchEnabled || models.testRequest.Protocol != "responses" || !models.testRequest.WebSearch {
+		t.Fatalf("provider configuration = %#v, test = %#v", provider, models.testRequest)
+	}
+	conversation, err := service.CreateConversation(alice, ConversationInput{ProviderID: provider.ID, Model: "model", ReasoningEffort: "xhigh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SendMessage(context.Background(), alice, conversation.ID, MessageInput{Content: "今天北京天气"}); err != nil {
+		t.Fatal(err)
+	}
+	if models.request.Protocol != "responses" || !models.request.WebSearch || models.request.ReasoningEffort != "xhigh" {
+		t.Fatalf("completion request = %#v", models.request)
+	}
+
+	chatProtocol := ProviderInput{Name: provider.Name, BaseURL: provider.BaseURL, DefaultModel: provider.DefaultModel, Protocol: "chat_completions", WebSearchEnabled: &webSearch}
+	updated, err := service.UpdateProvider(admin, provider.ID, chatProtocol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.WebSearchEnabled || updated.Available {
+		t.Fatalf("chat provider should disable search and require retest: %#v", updated)
+	}
 }
 
 func TestAttachmentIsConsumedAndDeletedAfterMessage(t *testing.T) {
@@ -320,7 +357,7 @@ func (models *blockingModels) Complete(ctx context.Context, _ llm.CompletionRequ
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
-func (*blockingModels) Test(context.Context, string, string, string) (*llm.ConnectionTest, error) {
+func (*blockingModels) Test(context.Context, llm.ConnectionTestRequest) (*llm.ConnectionTest, error) {
 	return &llm.ConnectionTest{Models: []string{"model"}}, nil
 }
 

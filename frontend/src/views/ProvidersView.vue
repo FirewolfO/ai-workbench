@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
-import { Connection, Delete, Edit, Key, Plus } from '@element-plus/icons-vue'
+import { onMounted, reactive, ref, watch } from 'vue'
+import { Connection, Delete, Edit, Key, Plus, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiMessage, workbenchApi } from '@/api'
 import type { Provider, ProviderInput } from '@/types'
@@ -11,7 +11,8 @@ const testingID = ref('')
 const dialogOpen = ref(false)
 const editingID = ref('')
 const providers = ref<Provider[]>([])
-const form = reactive<ProviderInput>({ name: '', baseUrl: 'https://api.openai.com/v1', defaultModel: '', apiKey: '', enabled: true })
+const form = reactive<ProviderInput>({ name: '', baseUrl: 'https://api.openai.com/v1', defaultModel: '', protocol: 'chat_completions', webSearchEnabled: false, apiKey: '', enabled: true })
+const protocolOptions = [{ label: 'Chat Completions', value: 'chat_completions' }, { label: 'Responses', value: 'responses' }]
 
 async function load() {
   loading.value = true
@@ -19,8 +20,8 @@ async function load() {
   catch (error) { ElMessage.error(apiMessage(error, '模型连接加载失败')) }
   finally { loading.value = false }
 }
-function openCreate() { editingID.value = ''; Object.assign(form, { name: '', baseUrl: 'https://api.openai.com/v1', defaultModel: '', apiKey: '', enabled: true }); dialogOpen.value = true }
-function openEdit(item: Provider) { editingID.value = item.id; Object.assign(form, { name: item.name, baseUrl: item.baseUrl, defaultModel: item.defaultModel, apiKey: '', enabled: item.enabled }); dialogOpen.value = true }
+function openCreate() { editingID.value = ''; Object.assign(form, { name: '', baseUrl: 'https://api.openai.com/v1', defaultModel: '', protocol: 'chat_completions', webSearchEnabled: false, apiKey: '', enabled: true }); dialogOpen.value = true }
+function openEdit(item: Provider) { editingID.value = item.id; Object.assign(form, { name: item.name, baseUrl: item.baseUrl, defaultModel: item.defaultModel, protocol: item.protocol, webSearchEnabled: item.webSearchEnabled, apiKey: '', enabled: item.enabled }); dialogOpen.value = true }
 function status(item: Provider): { label: string; type: 'success' | 'danger' | 'warning' | 'info' } {
   if (!item.enabled) return { label: '已停用', type: 'info' }
   if (item.available) return { label: '可使用', type: 'success' }
@@ -55,6 +56,7 @@ async function remove(item: Provider) {
   catch (error) { if (error !== 'cancel' && error !== 'close') ElMessage.error(apiMessage(error, '删除失败')) }
 }
 onMounted(load)
+watch(() => form.protocol, (value) => { if (value !== 'responses') form.webSearchEnabled = false })
 </script>
 
 <template>
@@ -64,7 +66,7 @@ onMounted(load)
       <article v-for="item in providers" :key="item.id" class="provider-card">
         <header><span class="provider-icon"><el-icon><Connection /></el-icon></span><el-tag :type="status(item).type" effect="plain">{{ status(item).label }}</el-tag></header>
         <h3>{{ item.name }}</h3><p>{{ item.baseUrl }}</p>
-        <dl><div><dt>默认模型</dt><dd>{{ item.defaultModel }}</dd></div><div><dt>可用模型</dt><dd>{{ item.models.length }} 个</dd></div><div><dt>访问密钥</dt><dd><el-icon><Key /></el-icon>{{ item.hasApiKey ? '已加密配置' : '未填写' }}</dd></div><div><dt>最近检测</dt><dd>{{ formatTestTime(item.lastTestedAt) }}<template v-if="item.available"> · {{ item.lastTestLatencyMs }} ms</template></dd></div></dl>
+        <dl><div><dt>默认模型</dt><dd>{{ item.defaultModel }}</dd></div><div><dt>调用协议</dt><dd>{{ item.protocol === 'responses' ? 'Responses' : 'Chat Completions' }}</dd></div><div><dt>联网搜索</dt><dd><el-icon v-if="item.webSearchEnabled"><Search /></el-icon>{{ item.webSearchEnabled ? '已开启' : '未开启' }}</dd></div><div><dt>可用模型</dt><dd>{{ item.models.length }} 个</dd></div><div><dt>访问密钥</dt><dd><el-icon><Key /></el-icon>{{ item.hasApiKey ? '已加密配置' : '未填写' }}</dd></div><div><dt>最近检测</dt><dd>{{ formatTestTime(item.lastTestedAt) }}<template v-if="item.available"> · {{ item.lastTestLatencyMs }} ms</template></dd></div></dl>
         <p class="provider-error" :title="item.lastTestError">{{ item.lastTestError || ' ' }}</p>
         <footer><el-button :loading="testingID === item.id" :disabled="Boolean(testingID)" @click="test(item)">测试连接</el-button><span><el-button text :icon="Edit" aria-label="编辑" @click="openEdit(item)" /><el-button text type="danger" :icon="Delete" aria-label="删除" @click="remove(item)" /></span></footer>
       </article>
@@ -75,6 +77,8 @@ onMounted(load)
         <el-form-item label="连接名称"><el-input v-model="form.name" maxlength="100" placeholder="例如：公司 OpenAI" /></el-form-item>
         <el-form-item label="API Base URL"><el-input v-model="form.baseUrl" placeholder="https://api.openai.com/v1" /></el-form-item>
         <el-form-item label="默认模型"><el-input v-model="form.defaultModel" placeholder="例如：gpt-4.1" /></el-form-item>
+        <el-form-item label="调用协议"><el-segmented v-model="form.protocol" :options="protocolOptions" /></el-form-item>
+        <el-form-item label="联网搜索"><el-switch v-model="form.webSearchEnabled" :disabled="form.protocol !== 'responses'" active-text="开启" inactive-text="关闭" /></el-form-item>
         <el-form-item label="API Key"><el-input v-model="form.apiKey" type="password" show-password :placeholder="editingID ? '留空则保留原密钥' : '本地模型可留空'" autocomplete="new-password" /></el-form-item>
         <el-form-item label="状态"><el-switch v-model="form.enabled" active-text="启用" inactive-text="停用" /></el-form-item>
       </el-form>

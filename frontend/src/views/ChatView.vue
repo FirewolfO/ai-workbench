@@ -47,7 +47,7 @@ const settingsModelNames = computed(() => {
   if (settings.model && !result.includes(settings.model)) result.unshift(settings.model)
   return result
 })
-const effortOptions = [{ label: '快速', value: 'fast' }, { label: '中等', value: 'medium' }, { label: '高', value: 'high' }]
+const effortOptions = [{ label: '快速', value: 'fast' }, { label: '中等', value: 'medium' }, { label: '高', value: 'high' }, { label: '极高', value: 'xhigh' }]
 let modelRefreshTimer: number | undefined
 let reasoningTimer: number | undefined
 let reasoningSaving = false
@@ -263,7 +263,7 @@ onBeforeUnmount(() => {
         <el-tooltip content="刷新模型列表"><el-button text :icon="Refresh" :loading="refreshingModels" aria-label="刷新模型列表" @click="refreshModels(true, true)" /></el-tooltip>
       </div>
       <template v-if="current">
-        <header class="chat-header"><div class="chat-title"><el-button class="mobile-conversation-toggle" text :icon="Menu" aria-label="打开对话列表" @click="mobileConversationsOpen = true" /><div><h2>{{ current.title }}</h2><span>{{ activeModel?.name || '模型' }} · {{ current.model }}</span></div></div><div><el-button text :icon="current.pinned ? StarFilled : Star" aria-label="置顶" @click="togglePin" /><el-dropdown trigger="click"><el-button text :icon="MoreFilled" aria-label="更多操作" /><template #dropdown><el-dropdown-menu><el-dropdown-item :icon="Edit" @click="rename">重命名</el-dropdown-item><el-dropdown-item :icon="Setting" @click="openSettings">对话设置</el-dropdown-item><el-dropdown-item divided :icon="Delete" @click="remove">删除对话</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div></header>
+        <header class="chat-header"><div class="chat-title"><el-button class="mobile-conversation-toggle" text :icon="Menu" aria-label="打开对话列表" @click="mobileConversationsOpen = true" /><div><h2>{{ current.title }}</h2><span>{{ activeModel?.name || '模型' }} · {{ current.model }}<template v-if="activeModel?.webSearchEnabled"> · 可联网</template></span></div></div><div><el-button text :icon="current.pinned ? StarFilled : Star" aria-label="置顶" @click="togglePin" /><el-dropdown trigger="click"><el-button text :icon="MoreFilled" aria-label="更多操作" /><template #dropdown><el-dropdown-menu><el-dropdown-item :icon="Edit" @click="rename">重命名</el-dropdown-item><el-dropdown-item :icon="Setting" @click="openSettings">对话设置</el-dropdown-item><el-dropdown-item divided :icon="Delete" @click="remove">删除对话</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div></header>
         <div ref="thread" class="message-thread">
           <div v-if="!current.messages?.length" class="chat-empty"><span class="brand-symbol">AI</span><h3>从一个问题开始</h3><p>{{ current.systemPrompt || '选择提示词，或直接输入你想处理的事情。' }}</p></div>
           <article v-for="message in current.messages" :key="message.id" class="message-row" :class="message.role">

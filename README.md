@@ -87,7 +87,7 @@ APK 统一发布到 `https://apps.lxvb.top`，AI Workbench 不再维护自己的
 
 ## Android 客户端
 
-`android/` 是固定访问 `https://ai.lxvb.top` 的原生 WebView 客户端，移动界面采用全宽对话区、侧滑会话列表，并保留模型和推理档位选择。客户端支持匿名使用和 People 登录，包含系统文件选择、返回导航、下载、Safe Browsing，以及通过统一应用中心检查、下载和安装新版本。它使用 `compileSdk 36`、`targetSdk 36`、`minSdk 35`，覆盖 Android 15 和 Android 16。
+`android/` 是固定访问 `https://ai.lxvb.top` 的原生 WebView 客户端，移动界面采用全宽对话区、侧滑会话列表，并保留模型和推理档位选择。客户端支持匿名使用和 People 登录，包含兼容 Android 15/16 厂商文件选择器的系统多附件选择、返回导航、下载、Safe Browsing，以及通过统一应用中心检查、下载和安装新版本。它使用 `compileSdk 36`、`targetSdk 36`、`minSdk 35`，覆盖 Android 15 和 Android 16。
 
 ```bash
 cd android

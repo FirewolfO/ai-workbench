@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChatLineRound, CircleCheck, Close, CopyDocument, Delete, Edit, Expand, MagicStick, MoreFilled, Paperclip, Plus, Promotion, Refresh, Search, Setting, Star, StarFilled, VideoPause } from '@element-plus/icons-vue'
+import { ChatLineRound, CircleCheck, Close, CopyDocument, Delete, Edit, Expand, Loading, MagicStick, MoreFilled, Paperclip, Plus, Promotion, Refresh, Search, Setting, Star, StarFilled, VideoPause, WarningFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiMessage, workbenchApi } from '@/api'
 import { renderMarkdown } from '@/utils/markdown'
@@ -30,6 +30,7 @@ interface AttachmentUpload {
   progress: number
   status: UploadStatus
   error: string
+  retryable: boolean
   attachment?: Attachment
   controller?: AbortController
 }
@@ -49,6 +50,12 @@ const displayMessages = computed(() => current.value?.messages?.filter((message)
 const readyAttachments = computed(() => attachmentUploads.value.flatMap((item) => item.attachment ? [item.attachment] : []))
 const uploadingCount = computed(() => attachmentUploads.value.filter((item) => item.status === 'uploading').length)
 const failedUploadCount = computed(() => attachmentUploads.value.filter((item) => item.status === 'failed').length)
+const uploadButtonState = computed(() => {
+  if (failedUploadCount.value) return 'failed'
+  if (uploadingCount.value) return 'uploading'
+  if (attachmentUploads.value.length && readyAttachments.value.length === attachmentUploads.value.length) return 'ready'
+  return 'idle'
+})
 const canSend = computed(() => !sending.value && uploadingCount.value === 0 && failedUploadCount.value === 0 && Boolean(draft.value.trim() || readyAttachments.value.length))
 const activeModelNames = computed(() => {
   const result = [...(activeModel.value?.models || [])]
@@ -69,6 +76,7 @@ let reasoningSaving = false
 let generationPoll = 0
 let pendingReasoning: { conversationId: string; value: ReasoningEffort } | null = null
 const persistedReasoning = new Map<string, ReasoningEffort>()
+const MAX_ATTACHMENT_SIZE = 8 * 1024 * 1024
 
 async function loadLists() {
   const [conversationList, promptList] = await Promise.all([workbenchApi.conversations(search.value), workbenchApi.prompts()])
@@ -268,14 +276,21 @@ function selectFiles(event: Event) {
   input.value = ''
   const availableSlots = 4 - attachmentUploads.value.length
   if (availableSlots <= 0) { ElMessage.warning('每次最多上传 4 个附件'); return }
-  const valid = files.filter((file) => file.size <= 8 * 1024 * 1024)
-  const accepted = valid.slice(0, availableSlots)
-  if (valid.length !== files.length) ElMessage.warning('已跳过超过 8 MiB 的附件')
-  if (valid.length > accepted.length) ElMessage.warning('每次最多上传 4 个附件，多余文件未加入')
+  const accepted = files.slice(0, availableSlots)
+  if (files.length > accepted.length) ElMessage.warning('每次最多上传 4 个附件，多余文件未加入')
   for (const file of accepted) {
-    const item = reactive<AttachmentUpload>({ localId: localUploadID(), file, name: file.name, progress: 0, status: 'uploading', error: '' })
+    const oversized = file.size > MAX_ATTACHMENT_SIZE
+    const item = reactive<AttachmentUpload>({
+      localId: localUploadID(),
+      file,
+      name: file.name,
+      progress: 0,
+      status: oversized ? 'failed' : 'uploading',
+      error: oversized ? '文件超过 8 MiB' : '',
+      retryable: !oversized,
+    })
     attachmentUploads.value.push(item)
-    void uploadAttachment(item)
+    if (!oversized) void uploadAttachment(item)
   }
 }
 async function uploadAttachment(item: AttachmentUpload) {
@@ -284,6 +299,7 @@ async function uploadAttachment(item: AttachmentUpload) {
   item.progress = 0
   item.status = 'uploading'
   item.error = ''
+  item.retryable = true
   try {
     const attachment = await workbenchApi.uploadAttachment(item.file, (progress) => { item.progress = progress }, controller.signal)
     if (!attachmentUploads.value.some((candidate) => candidate.localId === item.localId)) {
@@ -302,7 +318,20 @@ async function uploadAttachment(item: AttachmentUpload) {
   }
 }
 function retryAttachment(item: AttachmentUpload) {
-  if (item.status === 'failed') void uploadAttachment(item)
+  if (item.status === 'failed' && item.retryable) void uploadAttachment(item)
+}
+function uploadStatusLabel(item: AttachmentUpload) {
+  if (item.status === 'ready') return '完成'
+  if (item.status === 'failed') return item.retryable ? '失败' : '超过 8 MiB'
+  if (item.progress >= 100) return '处理中'
+  return item.progress > 0 ? `${item.progress}%` : '等待'
+}
+function openFilePicker() {
+  if (attachmentUploads.value.length >= 4) {
+    ElMessage.warning('每次最多上传 4 个附件')
+    return
+  }
+  fileInput.value?.click()
 }
 function removeAttachment(item: AttachmentUpload) {
   item.controller?.abort()
@@ -401,17 +430,19 @@ onBeforeUnmount(() => {
         <footer class="composer">
           <div v-if="attachmentUploads.length" class="attachment-list" aria-live="polite">
             <span v-for="item in attachmentUploads" :key="item.localId" class="attachment-chip" :class="`is-${item.status}`" :style="{ '--upload-progress': `${item.progress}%` }" :title="item.error || item.name">
-              <el-icon><Paperclip /></el-icon><b>{{ item.name }}</b>
+              <el-icon class="attachment-file-icon" :class="{ spinning: item.status === 'uploading' }"><Loading v-if="item.status === 'uploading'" /><Paperclip v-else /></el-icon><b>{{ item.name }}</b>
               <el-icon v-if="item.status === 'ready'" class="attachment-status"><CircleCheck /></el-icon>
-              <small v-else class="attachment-status">{{ item.status === 'failed' ? '失败' : `${item.progress}%` }}</small>
-              <button v-if="item.status === 'failed'" type="button" :aria-label="`重试 ${item.name}`" @click="retryAttachment(item)"><el-icon><Refresh /></el-icon></button>
+              <small class="attachment-status">{{ uploadStatusLabel(item) }}</small>
+              <button v-if="item.status === 'failed' && item.retryable" type="button" :aria-label="`重试 ${item.name}`" @click="retryAttachment(item)"><el-icon><Refresh /></el-icon></button>
               <button type="button" :aria-label="`移除 ${item.name}`" @click="removeAttachment(item)"><el-icon><Close /></el-icon></button>
             </span>
           </div>
           <el-input v-model="draft" type="textarea" resize="none" :autosize="{ minRows: 2, maxRows: 7 }" maxlength="20000" placeholder="输入消息" @keydown.enter.exact.prevent="send" />
           <div class="composer-tools">
             <div class="composer-actions">
-              <el-tooltip :content="attachmentUploads.length >= 4 ? '已达到 4 个附件上限' : '上传附件'"><el-button text :icon="Paperclip" :disabled="attachmentUploads.length >= 4" aria-label="上传附件" @click="fileInput?.click()" /></el-tooltip>
+              <el-button class="attachment-trigger" :class="`is-${uploadButtonState}`" text aria-label="选择附件" @click="openFilePicker">
+                <el-icon :class="{ spinning: uploadButtonState === 'uploading' }"><Loading v-if="uploadButtonState === 'uploading'" /><CircleCheck v-else-if="uploadButtonState === 'ready'" /><WarningFilled v-else-if="uploadButtonState === 'failed'" /><Paperclip v-else /></el-icon>
+              </el-button>
               <input ref="fileInput" class="file-input" type="file" multiple @change="selectFiles" />
               <el-tooltip content="选择提示词"><el-button text :icon="MagicStick" aria-label="选择提示词" @click="promptOpen = true" /></el-tooltip>
               <el-select :model-value="current.reasoningEffort" class="composer-effort" size="small" :disabled="sending" aria-label="推理档位" @change="changeReasoning"><el-option v-for="item in effortOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select>

@@ -111,7 +111,7 @@ export const workbenchApi = {
       onUploadProgress: (event) => {
         if (!onProgress) return
         const total = event.total || file.size
-        onProgress(total > 0 ? Math.min(99, Math.round((event.loaded / total) * 100)) : 0)
+        onProgress(total > 0 ? Math.min(100, Math.round((event.loaded / total) * 100)) : 0)
       },
     }))
   },

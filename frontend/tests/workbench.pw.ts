@@ -84,8 +84,10 @@ test('attachments upload concurrently with independent progress', async ({ page 
   ])
   await expect(page.getByText('second-plan.txt')).toBeVisible()
   await expect(page.getByText('third-plan.txt')).toBeVisible()
+  await expect(page.getByText('上传附件', { exact: true })).toHaveCount(0)
   await expect.poll(() => uploadRequests.length).toBe(3)
   await expect(page.locator('.attachment-chip.is-uploading')).toHaveCount(3)
+  await expect(page.locator('.attachment-trigger.is-uploading')).toBeVisible()
   if (testInfo.project.name === 'mobile') {
     const rows = await page.locator('.attachment-chip').evaluateAll((items) => items.map((item) => item.getBoundingClientRect().toJSON()))
     expect(rows[1].y).toBeGreaterThanOrEqual(rows[0].y + rows[0].height)
@@ -93,7 +95,22 @@ test('attachments upload concurrently with independent progress', async ({ page 
     await page.screenshot({ path: '../.runtime/screenshots/attachment-upload-mobile.png', fullPage: true })
   }
   await expect(page.locator('.attachment-chip.is-ready')).toHaveCount(3, { timeout: 3_000 })
+  await expect(page.locator('.attachment-trigger.is-ready')).toBeVisible()
+  await expect(page.locator('.attachment-chip').filter({ hasText: '完成' })).toHaveCount(3)
+  if (testInfo.project.name === 'mobile') await page.screenshot({ path: '../.runtime/screenshots/attachment-ready-mobile.png', fullPage: true })
   await expect(page.getByRole('button', { name: '发送消息' })).toBeEnabled()
+})
+
+test('oversized attachments stay visible with a reason', async ({ page }) => {
+  await page.goto('/chat/cnv_demo')
+  await page.locator('input[type="file"]').setInputFiles({
+    name: 'too-large.pdf',
+    mimeType: 'application/pdf',
+    buffer: Buffer.alloc(8 * 1024 * 1024 + 1),
+  })
+  await expect(page.getByText('too-large.pdf')).toBeVisible()
+  await expect(page.getByText('超过 8 MiB')).toBeVisible()
+  await expect(page.locator('.attachment-trigger.is-failed')).toBeVisible()
 })
 
 test('native update event exposes the in-app update action', async ({ page }) => {

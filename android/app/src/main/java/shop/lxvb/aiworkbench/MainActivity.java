@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.DownloadManager;
 import android.content.ActivityNotFoundException;
+import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
@@ -40,7 +41,10 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -212,8 +216,52 @@ public final class MainActivity extends Activity {
         if (requestCode != FILE_CHOOSER_REQUEST || fileCallback == null) {
             return;
         }
-        fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data));
+        Uri[] selectedFiles = resolveSelectedFiles(resultCode, data);
+        fileCallback.onReceiveValue(selectedFiles);
         fileCallback = null;
+        if (resultCode == RESULT_OK && (selectedFiles == null || selectedFiles.length == 0)) {
+            Toast.makeText(this, R.string.file_selection_failed, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private Uri[] resolveSelectedFiles(int resultCode, Intent data) {
+        if (resultCode != RESULT_OK || data == null) return null;
+
+        Set<Uri> selected = new LinkedHashSet<>();
+        ClipData clipData = data.getClipData();
+        if (clipData != null) {
+            for (int index = 0; index < clipData.getItemCount(); index++) {
+                Uri uri = clipData.getItemAt(index).getUri();
+                if (uri != null) selected.add(uri);
+            }
+        }
+
+        try {
+            ArrayList<Uri> streams = data.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri.class);
+            if (streams != null) {
+                for (Uri uri : streams) {
+                    if (uri != null) selected.add(uri);
+                }
+            }
+            Uri stream = data.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class);
+            if (stream != null) selected.add(stream);
+        } catch (RuntimeException ignored) {
+            // Some vendor pickers use a different parcelable shape for EXTRA_STREAM.
+        }
+
+        Uri direct = data.getData();
+        if (direct != null) selected.add(direct);
+        try {
+            Uri[] parsed = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+            if (parsed != null) {
+                for (Uri uri : parsed) {
+                    if (uri != null) selected.add(uri);
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // Explicitly parsed ClipData remains usable when the WebView helper rejects vendor data.
+        }
+        return selected.isEmpty() ? null : selected.toArray(new Uri[0]);
     }
 
     private void download(String url, String userAgent, String disposition, String mimeType, long size) {
@@ -404,6 +452,8 @@ public final class MainActivity extends Activity {
             fileCallback = callback;
             try {
                 Intent chooser = params.createIntent();
+                chooser.addCategory(Intent.CATEGORY_OPENABLE);
+                chooser.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 if (params.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE) {
                     chooser.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
                 }

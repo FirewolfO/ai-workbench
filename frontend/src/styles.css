@@ -164,13 +164,25 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
 .attachment-list { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 6px; }
 .attachment-list > span, .message-attachments span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 260px; padding: 4px 6px; border-radius: 5px; color: #53615d; background: #edf1f0; font-size: 11px; }
 .attachment-list .attachment-chip { position: relative; isolation: isolate; overflow: hidden; min-height: 29px; padding: 5px 6px; border: 1px solid #dce4e1; background: #f4f6f5; }
-.attachment-chip::before { position: absolute; z-index: -1; inset: 0 auto 0 0; width: var(--upload-progress); background: #d9ebe5; content: ""; transition: width .18s ease; }
+.attachment-chip::before { position: absolute; z-index: -1; inset: 0 auto 0 0; width: max(3px, var(--upload-progress)); background: #a9d8ca; content: ""; transition: width .18s ease; }
+.attachment-chip.is-uploading { border-color: #80b7a7; }
+.attachment-chip.is-ready { border-color: #91b9ad; background: #e9f3f0; }
+.attachment-chip.is-ready::before { background: #c7e3db; }
 .attachment-chip.is-failed { border-color: #e5b8af; color: #a74434; }
 .attachment-chip.is-failed::before { background: #f7e5e1; }
 .attachment-list b { overflow: hidden; min-width: 44px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-list .attachment-status { flex: 0 0 auto; color: #397967; font-size: 10px; font-weight: 650; }
 .attachment-list .is-failed .attachment-status { color: #b54836; }
 .attachment-list button { display: grid; place-items: center; width: 20px; height: 20px; flex: 0 0 20px; padding: 0; border: 0; color: #7a8582; background: transparent; cursor: pointer; }
+.attachment-file-icon { flex: 0 0 auto; color: #397967; }
+.spinning { animation: attachment-spin .9s linear infinite; }
+.attachment-trigger { transition: color .18s ease, background-color .18s ease; }
+.attachment-trigger.is-uploading { color: #8a6618; background: #f6edcf; }
+.attachment-trigger.is-ready { color: #fff; background: #277762; }
+.attachment-trigger.is-failed { color: #fff; background: #b54836; }
+.attachment-trigger.is-ready:hover, .attachment-trigger.is-ready:focus { color: #fff; background: #1e6653; }
+.attachment-trigger.is-failed:hover, .attachment-trigger.is-failed:focus { color: #fff; background: #993b2c; }
+@keyframes attachment-spin { to { transform: rotate(360deg); } }
 .message-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .thinking span { margin-left: 4px; color: #7a8582; font-size: 11px; }
 .chat-empty, .workspace-empty { display: grid; place-items: center; align-content: center; height: 100%; text-align: center; }

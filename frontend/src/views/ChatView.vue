@@ -123,7 +123,7 @@ async function createConversation() {
   catch (error) { ElMessage.error(apiMessage(error, '创建对话失败')) }
 }
 async function openLatestOrCreate() {
-  if (typeof route.params.id === 'string') return
+  if (typeof route.params.id === 'string' && route.params.id) return
   const latest = conversations.value.reduce<Conversation | undefined>((result, item) => !result || new Date(item.updatedAt).getTime() > new Date(result.updatedAt).getTime() ? item : result, undefined)
   if (latest) {
     await router.replace({ path: `/chat/${latest.id}`, query: route.query })
@@ -289,7 +289,7 @@ async function openConversation(id: string) { mobileConversationsOpen.value = fa
 watch(() => route.params.id, (id) => {
   mobileConversationsOpen.value = false
   attachments.value = []
-  if (typeof id === 'string') void loadCurrent(id)
+  if (typeof id === 'string' && id) void loadCurrent(id)
   else {
     generationPoll += 1
     sending.value = false

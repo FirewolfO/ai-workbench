@@ -26,7 +26,6 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
-import android.view.WindowInsetsController;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -60,13 +59,6 @@ public final class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().setNavigationBarContrastEnforced(false);
-        WindowInsetsController bars = getWindow().getInsetsController();
-        if (bars != null) {
-            int lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                    | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
-            bars.setSystemBarsAppearance(lightBars, lightBars);
-        }
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.WHITE);
@@ -80,6 +72,8 @@ public final class MainActivity extends Activity {
             return WindowInsets.CONSUMED;
         });
         setContentView(root);
+        // PhoneWindow has no DecorView before setContentView on Android 15 and 16.
+        getWindow().setNavigationBarContrastEnforced(false);
         root.requestApplyInsets();
 
         try {

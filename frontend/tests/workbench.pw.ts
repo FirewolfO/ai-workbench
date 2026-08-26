@@ -20,6 +20,8 @@ const frontier = {
 }
 
 test.beforeEach(async ({ page }) => {
+  let queued = false
+  let generationPolls = 0
   await page.addInitScript(() => {
     sessionStorage.setItem('ai_workbench_access_token', 'visual-token')
     sessionStorage.setItem('ai_workbench_session', JSON.stringify({ user: { id: 'internal:alice', username: 'alice', displayName: 'Alice', source: 'internal', role: 'user' }, expiresAt: '2099-01-01T00:00:00Z' }))
@@ -30,10 +32,21 @@ test.beforeEach(async ({ page }) => {
     if (path.endsWith('/auth/me')) data = { user: { id: 'internal:alice', username: 'alice', displayName: 'Alice', source: 'internal', role: 'user' } }
     else if (path.endsWith('/models')) data = [{ id: 'prv_demo', name: '企业模型', defaultModel: 'company-model', models: ['company-model', 'company-model-pro'], modelsUpdatedAt: '2026-08-26T08:00:00Z' }]
     else if (path.endsWith('/prompts')) data = [{ id: 'pmt_demo', title: '技术评审', description: '评审技术方案', category: '研发', content: '请评审以下技术方案：', favorite: true, useCount: 8, createdAt: '2026-08-11T09:00:00Z', updatedAt: '2026-08-11T09:00:00Z' }]
+    else if (path.endsWith('/conversations/cnv_demo/messages/async')) {
+      queued = true
+      data = { id: 'msg_async', conversationId: 'cnv_demo', role: 'assistant', content: '正在生成', model: 'company-model', promptTokens: 0, completionTokens: 0, latencyMs: 0, status: 'generating', createdAt: '2026-08-11T11:01:00Z' }
+    }
     else if (path.endsWith('/conversations/cnv_demo')) {
       if (route.request().method() === 'PATCH') {
         await new Promise((resolve) => setTimeout(resolve, 700))
         data = { ...conversation, ...(route.request().postDataJSON() as object) }
+      } else if (queued) {
+        generationPolls += 1
+        const user = { id: 'msg_async_user', conversationId: 'cnv_demo', role: 'user', content: '执行复杂联网查询', promptTokens: 0, completionTokens: 0, latencyMs: 0, status: 'completed', createdAt: '2026-08-11T11:01:00Z' }
+        const assistant = generationPolls < 2
+          ? { id: 'msg_async', conversationId: 'cnv_demo', role: 'assistant', content: '正在生成', model: 'company-model', promptTokens: 0, completionTokens: 0, latencyMs: 0, status: 'generating', createdAt: '2026-08-11T11:01:00Z' }
+          : { id: 'msg_async', conversationId: 'cnv_demo', role: 'assistant', content: '后台联网查询已经完成。', model: 'company-model', promptTokens: 60, completionTokens: 20, latencyMs: 125000, status: 'completed', createdAt: '2026-08-11T11:03:05Z' }
+        data = { ...conversation, messageCount: 4, messages: [...conversation.messages, user, assistant] }
       } else data = conversation
     }
     else if (path.endsWith('/conversations/cnv_new')) data = newConversation
@@ -45,6 +58,17 @@ test.beforeEach(async ({ page }) => {
     else if (path.endsWith('/frontier')) data = frontier
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 'OK', message: 'success', data }) })
   })
+})
+
+test('long model generation completes through background polling', async ({ page }) => {
+  await page.goto('/chat/cnv_demo')
+  await page.getByPlaceholder('输入消息').fill('执行复杂联网查询')
+  const queuedRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/messages/async'))
+  await page.getByRole('button', { name: '发送消息' }).click()
+  await queuedRequest
+  await expect(page.getByText('正在生成')).toBeVisible()
+  await expect(page.getByText('后台联网查询已经完成。')).toBeVisible({ timeout: 5_000 })
+  await expect(page.getByText('125000 ms · 80 tokens')).toBeVisible()
 })
 
 test('model selection is available before creating a conversation', async ({ page }, testInfo) => {

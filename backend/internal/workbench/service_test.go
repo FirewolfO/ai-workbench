@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -384,6 +385,106 @@ func TestStopGeneration(t *testing.T) {
 	loaded, _ := service.Conversation(alice, conversation.ID)
 	if loaded.Messages[len(loaded.Messages)-1].Status != "stopped" {
 		t.Fatalf("last message = %#v", loaded.Messages[len(loaded.Messages)-1])
+	}
+}
+
+type queuedModels struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (models *queuedModels) Complete(ctx context.Context, request llm.CompletionRequest) (*llm.CompletionResult, error) {
+	close(models.started)
+	select {
+	case <-models.release:
+		return &llm.CompletionResult{Content: "后台回答", Model: request.Model, PromptTokens: 13, CompletionTokens: 5, Latency: time.Second}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+func (*queuedModels) Test(context.Context, llm.ConnectionTestRequest) (*llm.ConnectionTest, error) {
+	return &llm.ConnectionTest{Models: []string{"model"}}, nil
+}
+
+func TestQueueMessageCompletesInBackground(t *testing.T) {
+	models := &queuedModels{started: make(chan struct{}), release: make(chan struct{})}
+	service := testServiceWithModels(t, models)
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
+	createAvailableProvider(t, service, admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	conversation, _ := service.CreateConversation(alice, ConversationInput{})
+
+	queued, err := service.QueueMessage(alice, conversation.ID, MessageInput{Content: "复杂联网问题"})
+	if err != nil || queued.Status != "generating" {
+		t.Fatalf("QueueMessage() = %#v, %v", queued, err)
+	}
+	<-models.started
+	loaded, _ := service.Conversation(alice, conversation.ID)
+	if len(loaded.Messages) != 2 || loaded.Messages[1].ID != queued.ID || loaded.Messages[1].Status != "generating" {
+		t.Fatalf("queued conversation = %#v", loaded.Messages)
+	}
+
+	close(models.release)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		loaded, _ = service.Conversation(alice, conversation.ID)
+		if loaded.Messages[1].Status == "completed" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	answer := loaded.Messages[1]
+	if answer.Status != "completed" || answer.Content != "后台回答" || answer.PromptTokens != 13 || answer.CompletionTokens != 5 {
+		t.Fatalf("completed message = %#v", answer)
+	}
+}
+
+func TestStopQueuedGeneration(t *testing.T) {
+	models := &blockingModels{started: make(chan struct{})}
+	service := testServiceWithModels(t, models)
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
+	createAvailableProvider(t, service, admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	conversation, _ := service.CreateConversation(alice, ConversationInput{})
+	queued, err := service.QueueMessage(alice, conversation.ID, MessageInput{Content: "停止这个任务"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-models.started
+	stopped, err := service.StopGeneration(alice, conversation.ID)
+	if err != nil || !stopped {
+		t.Fatalf("StopGeneration() = %v, %v", stopped, err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		loaded, _ := service.Conversation(alice, conversation.ID)
+		for _, message := range loaded.Messages {
+			if message.ID == queued.ID && message.Status == "stopped" {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("queued generation was not marked stopped")
+}
+
+func TestNewMarksInterruptedGenerationAsFailed(t *testing.T) {
+	service := testService(t)
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
+	createAvailableProvider(t, service, admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	conversation, _ := service.CreateConversation(alice, ConversationInput{})
+	message := model.Message{ID: "msg_generating", ConversationID: conversation.ID, Role: "assistant", Content: "正在生成", Model: "model", Status: "generating"}
+	if err := service.database.DB.Create(&message).Error; err != nil {
+		t.Fatal(err)
+	}
+	_ = New(service.database, service.vault, fakeModels{}, t.TempDir())
+	var recovered model.Message
+	if err := service.database.DB.First(&recovered, "id = ?", message.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Status != "failed" || !strings.Contains(recovered.Content, "服务重启") {
+		t.Fatalf("recovered message = %#v", recovered)
 	}
 }
 

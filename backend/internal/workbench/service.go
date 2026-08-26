@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -39,6 +40,7 @@ const (
 	maxAttachmentBytes          = 8 << 20
 	attachmentTTL               = time.Hour
 	modelCatalogRefreshInterval = 5 * time.Minute
+	asyncGenerationTimeout      = 4 * time.Minute
 	protocolChatCompletions     = "chat_completions"
 	protocolResponses           = "responses"
 )
@@ -93,6 +95,17 @@ type MessageInput struct {
 	AttachmentIDs []string `json:"attachmentIds"`
 }
 
+type messageGeneration struct {
+	actor        identity.Actor
+	conversation *model.Conversation
+	provider     *model.Provider
+	messages     []llm.Message
+	apiKey       string
+	assistant    *model.Message
+	ctx          context.Context
+	cancel       context.CancelFunc
+}
+
 type Dashboard struct {
 	ConversationCount int64                `json:"conversationCount"`
 	MessageCount      int64                `json:"messageCount"`
@@ -130,6 +143,9 @@ func New(database *store.Store, vault *security.Vault, models llm.Client, attach
 	service := &Service{database: database, vault: vault, models: models, attachmentDir: attachmentDir, inflight: map[string]context.CancelFunc{}}
 	_ = os.MkdirAll(attachmentDir, 0o700)
 	_ = service.cleanupExpiredAttachments()
+	_ = database.DB.Model(&model.Message{}).Where("status = ?", "generating").Updates(map[string]any{
+		"status": "failed", "content": "模型响应失败：服务重启导致生成中断，请重新发送",
+	}).Error
 	return service
 }
 
@@ -774,6 +790,31 @@ func (s *Service) DeleteConversation(actor identity.Actor, id string) error {
 }
 
 func (s *Service) SendMessage(ctx context.Context, actor identity.Actor, conversationID string, input MessageInput) (*model.Message, error) {
+	generation, err := s.startMessage(ctx, actor, conversationID, input)
+	if err != nil {
+		return nil, err
+	}
+	return s.completeMessage(generation)
+}
+
+func (s *Service) QueueMessage(actor identity.Actor, conversationID string, input MessageInput) (*model.Message, error) {
+	ctx, timeoutCancel := context.WithTimeout(context.Background(), asyncGenerationTimeout)
+	generation, err := s.startMessage(ctx, actor, conversationID, input)
+	if err != nil {
+		timeoutCancel()
+		return nil, err
+	}
+	queued := *generation.assistant
+	go func() {
+		defer timeoutCancel()
+		if _, err := s.completeMessage(generation); err != nil && !errors.Is(err, ErrCanceled) && !errors.Is(err, ErrProvider) {
+			log.Printf("异步模型生成失败 conversation=%s: %v", conversationID, err)
+		}
+	}()
+	return &queued, nil
+}
+
+func (s *Service) startMessage(ctx context.Context, actor identity.Actor, conversationID string, input MessageInput) (*messageGeneration, error) {
 	content := strings.TrimSpace(input.Content)
 	if (content == "" && len(input.AttachmentIDs) == 0) || len(content) > 20000 || len(input.AttachmentIDs) > 4 {
 		return nil, ErrInvalid
@@ -786,6 +827,20 @@ func (s *Service) SendMessage(ctx context.Context, actor identity.Actor, convers
 	if err != nil || !provider.Enabled || !provider.Available {
 		return nil, fmt.Errorf("%w: model provider is unavailable", ErrInvalid)
 	}
+	key, err := s.providerKey(provider)
+	if err != nil {
+		return nil, err
+	}
+	modelContext, cancel, err := s.beginGeneration(ctx, actor, conversation.ID)
+	if err != nil {
+		return nil, err
+	}
+	started := false
+	defer func() {
+		if !started {
+			s.endGeneration(actor, conversation.ID, cancel)
+		}
+	}()
 	attachments, err := s.consumeAttachments(actor, input.AttachmentIDs)
 	if err != nil {
 		return nil, err
@@ -825,46 +880,68 @@ func (s *Service) SendMessage(ctx context.Context, actor identity.Actor, convers
 		}
 	}
 	messages = append(messages, llm.Message{Role: "user", Content: completionContent(content, attachments)})
-	key, err := s.providerKey(provider)
-	if err != nil {
+	assistant := &model.Message{
+		ID: newID("msg"), ConversationID: conversation.ID, Role: "assistant", Content: "正在生成",
+		Model: conversation.Model, Status: "generating",
+	}
+	if err := s.database.DB.Create(assistant).Error; err != nil {
 		return nil, err
 	}
-	modelContext, cancel, err := s.beginGeneration(ctx, actor, conversation.ID)
-	if err != nil {
-		return nil, err
-	}
-	defer s.endGeneration(actor, conversation.ID, cancel)
-	result, err := s.models.Complete(modelContext, llm.CompletionRequest{
-		BaseURL: provider.BaseURL, APIKey: key, Model: conversation.Model, Protocol: provider.Protocol,
-		WebSearch: provider.WebSearchEnabled, Messages: messages, Temperature: 0.7, ReasoningEffort: conversation.ReasoningEffort,
+	started = true
+	return &messageGeneration{
+		actor: actor, conversation: conversation, provider: provider, messages: messages, apiKey: key,
+		assistant: assistant, ctx: modelContext, cancel: cancel,
+	}, nil
+}
+
+func (s *Service) completeMessage(generation *messageGeneration) (*model.Message, error) {
+	defer s.endGeneration(generation.actor, generation.conversation.ID, generation.cancel)
+	result, err := s.models.Complete(generation.ctx, llm.CompletionRequest{
+		BaseURL: generation.provider.BaseURL, APIKey: generation.apiKey, Model: generation.conversation.Model, Protocol: generation.provider.Protocol,
+		WebSearch: generation.provider.WebSearchEnabled, Messages: generation.messages, Temperature: 0.7, ReasoningEffort: generation.conversation.ReasoningEffort,
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			stopped := &model.Message{ID: newID("msg"), ConversationID: conversation.ID, Role: "assistant", Content: "已停止生成", Model: conversation.Model, Status: "stopped"}
-			_ = s.database.DB.Create(stopped).Error
+			if saveErr := s.updateGeneratedMessage(generation.assistant, map[string]any{"content": "已停止生成", "status": "stopped"}); saveErr != nil {
+				return nil, saveErr
+			}
 			return nil, ErrCanceled
 		}
 		reason := strings.TrimSpace(err.Error())
 		if runes := []rune(reason); len(runes) > 400 {
 			reason = string(runes[:400]) + "..."
 		}
-		failed := &model.Message{ID: newID("msg"), ConversationID: conversation.ID, Role: "assistant", Content: "模型响应失败：" + reason, Model: conversation.Model, Status: "failed"}
-		_ = s.database.DB.Create(failed).Error
+		if saveErr := s.updateGeneratedMessage(generation.assistant, map[string]any{"content": "模型响应失败：" + reason, "status": "failed"}); saveErr != nil {
+			return nil, saveErr
+		}
 		return nil, fmt.Errorf("%w: %v", ErrProvider, err)
 	}
 	modelName := strings.TrimSpace(result.Model)
 	if modelName == "" {
-		modelName = conversation.Model
+		modelName = generation.conversation.Model
 	}
-	assistant := &model.Message{
-		ID: newID("msg"), ConversationID: conversation.ID, Role: "assistant", Content: result.Content, Model: modelName,
-		PromptTokens: result.PromptTokens, CompletionTokens: result.CompletionTokens, LatencyMs: result.Latency.Milliseconds(), Status: "completed",
+	updates := map[string]any{
+		"content": result.Content, "model": modelName, "prompt_tokens": result.PromptTokens,
+		"completion_tokens": result.CompletionTokens, "latency_ms": result.Latency.Milliseconds(), "status": "completed",
 	}
-	if err := s.database.DB.Create(assistant).Error; err != nil {
+	if err := s.updateGeneratedMessage(generation.assistant, updates); err != nil {
 		return nil, err
 	}
-	_ = s.database.DB.Model(conversation).Update("updated_at", time.Now().UTC()).Error
-	return assistant, nil
+	return generation.assistant, nil
+}
+
+func (s *Service) updateGeneratedMessage(message *model.Message, updates map[string]any) error {
+	result := s.database.DB.Model(&model.Message{}).Where("id = ? AND status = ?", message.ID, "generating").Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	if err := s.database.DB.First(message, "id = ?", message.ID).Error; err != nil {
+		return err
+	}
+	return s.database.DB.Model(&model.Conversation{}).Where("id = ?", message.ConversationID).Update("updated_at", time.Now().UTC()).Error
 }
 
 func (s *Service) StopGeneration(actor identity.Actor, conversationID string) (bool, error) {

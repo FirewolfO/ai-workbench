@@ -74,7 +74,7 @@ type ModelCatalogClient interface {
 
 type HTTPClient struct{ client *http.Client }
 
-func New() *HTTPClient { return &HTTPClient{client: &http.Client{Timeout: 90 * time.Second}} }
+func New() *HTTPClient { return &HTTPClient{client: &http.Client{Timeout: 4 * time.Minute}} }
 
 func (c *HTTPClient) Complete(ctx context.Context, input CompletionRequest) (*CompletionResult, error) {
 	if input.Protocol == "responses" {

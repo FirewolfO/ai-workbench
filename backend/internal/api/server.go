@@ -73,6 +73,7 @@ func New(address string, allowedOrigins []string, auth authenticator, service *w
 	mux.Handle("PATCH /api/v1/conversations/{id}", server.requireAuth(http.HandlerFunc(server.updateConversation)))
 	mux.Handle("DELETE /api/v1/conversations/{id}", server.requireAuth(http.HandlerFunc(server.deleteConversation)))
 	mux.Handle("POST /api/v1/conversations/{id}/messages", server.requireAuth(http.HandlerFunc(server.sendMessage)))
+	mux.Handle("POST /api/v1/conversations/{id}/messages/async", server.requireAuth(http.HandlerFunc(server.queueMessage)))
 	mux.Handle("POST /api/v1/conversations/{id}/stop", server.requireAuth(http.HandlerFunc(server.stopGeneration)))
 	mux.Handle("POST /api/v1/attachments", server.requireAuth(http.HandlerFunc(server.createAttachment)))
 	mux.Handle("DELETE /api/v1/attachments/{id}", server.requireAuth(http.HandlerFunc(server.deleteAttachment)))
@@ -335,6 +336,15 @@ func (s *Server) sendMessage(writer http.ResponseWriter, request *http.Request) 
 	}
 	result, err := s.workbench.SendMessage(request.Context(), actor(request), request.PathValue("id"), input)
 	respond(writer, result, err, http.StatusCreated)
+}
+
+func (s *Server) queueMessage(writer http.ResponseWriter, request *http.Request) {
+	var input workbench.MessageInput
+	if !decode(writer, request, &input) {
+		return
+	}
+	result, err := s.workbench.QueueMessage(actor(request), request.PathValue("id"), input)
+	respond(writer, result, err, http.StatusAccepted)
 }
 
 func (s *Server) stopGeneration(writer http.ResponseWriter, request *http.Request) {

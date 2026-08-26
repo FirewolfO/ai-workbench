@@ -35,6 +35,7 @@ const settings = reactive({ providerId: '', model: '', systemPrompt: '', reasoni
 const selectedProviderId = computed(() => current.value?.providerId || pendingProviderId.value)
 const selectedModel = computed(() => current.value?.model || pendingModel.value)
 const activeModel = computed(() => models.value.find((item) => item.id === selectedProviderId.value))
+const displayMessages = computed(() => current.value?.messages?.filter((message) => message.status !== 'generating') || [])
 const activeModelNames = computed(() => {
   const result = [...(activeModel.value?.models || [])]
   const selected = selectedModel.value
@@ -51,6 +52,7 @@ const effortOptions = [{ label: '快速', value: 'fast' }, { label: '中等', va
 let modelRefreshTimer: number | undefined
 let reasoningTimer: number | undefined
 let reasoningSaving = false
+let generationPoll = 0
 let pendingReasoning: { conversationId: string; value: ReasoningEffort } | null = null
 const persistedReasoning = new Map<string, ReasoningEffort>()
 
@@ -77,11 +79,16 @@ function refreshModelsWhenVisible() {
   if (!document.hidden) void refreshModels(true)
 }
 async function loadCurrent(id: string) {
+  generationPoll += 1
+  sending.value = false
+  stopping.value = false
   loading.value = true
   try {
     current.value = await workbenchApi.conversation(id)
     persistedReasoning.set(id, current.value.reasoningEffort)
     await scrollToEnd()
+    const pending = [...(current.value.messages || [])].reverse().find((message) => message.role === 'assistant' && message.status === 'generating')
+    if (pending) void trackGeneration(id, pending.id)
   }
   catch (error) { ElMessage.error(apiMessage(error, '对话加载失败')); await router.replace('/chat') }
   finally { loading.value = false }
@@ -124,13 +131,51 @@ async function send() {
   sending.value = true
   await scrollToEnd()
   try {
-    const answer = await workbenchApi.sendMessage(conversationID, content, pendingAttachments.map((item) => item.id))
-    current.value.messages.push(answer)
-    await loadLists()
+    const queued = await workbenchApi.queueMessage(conversationID, content, pendingAttachments.map((item) => item.id))
+    current.value.messages.push(queued)
+    await trackGeneration(conversationID, queued.id)
   } catch (error) {
-    if (!stopping.value) ElMessage.error(apiMessage(error, '模型响应失败'))
+    generationPoll += 1
+    sending.value = false
+    stopping.value = false
+    ElMessage.error(apiMessage(error, '模型响应失败'))
     current.value = await workbenchApi.conversation(conversationID)
-  } finally { sending.value = false; stopping.value = false; await scrollToEnd() }
+  } finally { await scrollToEnd() }
+}
+
+async function trackGeneration(conversationID: string, messageID: string) {
+  const poll = ++generationPoll
+  sending.value = true
+  let failures = 0
+  try {
+    while (poll === generationPoll && current.value?.id === conversationID) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1_000))
+      if (poll !== generationPoll || current.value?.id !== conversationID) return
+      let updated: Conversation
+      try {
+        updated = await workbenchApi.conversation(conversationID)
+        failures = 0
+      } catch (error) {
+        failures += 1
+        if (failures >= 3) throw error
+        continue
+      }
+      current.value = updated
+      await scrollToEnd()
+      const answer = updated.messages?.find((message) => message.id === messageID)
+      if (!answer || answer.status === 'generating') continue
+      if (answer.status === 'failed') ElMessage.error('模型响应失败，请查看错误信息')
+      try { await loadLists() } catch { /* 对话结果已经加载，列表稍后会自动刷新。 */ }
+      return
+    }
+  } catch (error) {
+    ElMessage.error(apiMessage(error, '生成状态读取失败，请刷新页面查看结果'))
+  } finally {
+    if (poll === generationPoll) {
+      sending.value = false
+      stopping.value = false
+    }
+  }
 }
 async function stop() {
   if (!current.value || !sending.value || stopping.value) return
@@ -227,7 +272,17 @@ async function saveSettings() { if (!current.value) return; try { current.value 
 async function copy(content: string) { try { await navigator.clipboard.writeText(content); ElMessage.success('已复制') } catch { ElMessage.error('复制失败') } }
 async function openConversation(id: string) { mobileConversationsOpen.value = false; if (pendingReasoning) void flushReasoning(); await router.push(`/chat/${id}`) }
 
-watch(() => route.params.id, (id) => { mobileConversationsOpen.value = false; attachments.value = []; if (typeof id === 'string') void loadCurrent(id); else current.value = null })
+watch(() => route.params.id, (id) => {
+  mobileConversationsOpen.value = false
+  attachments.value = []
+  if (typeof id === 'string') void loadCurrent(id)
+  else {
+    generationPoll += 1
+    sending.value = false
+    stopping.value = false
+    current.value = null
+  }
+})
 onMounted(() => {
   void initialize()
   modelRefreshTimer = window.setInterval(refreshModelsWhenVisible, 60_000)
@@ -235,6 +290,7 @@ onMounted(() => {
   window.addEventListener('focus', refreshModelsWhenVisible)
 })
 onBeforeUnmount(() => {
+  generationPoll += 1
   if (modelRefreshTimer) window.clearInterval(modelRefreshTimer)
   if (reasoningTimer) window.clearTimeout(reasoningTimer)
   if (pendingReasoning) void flushReasoning()
@@ -265,8 +321,8 @@ onBeforeUnmount(() => {
       <template v-if="current">
         <header class="chat-header"><div class="chat-title"><el-button class="mobile-conversation-toggle" text :icon="Menu" aria-label="打开对话列表" @click="mobileConversationsOpen = true" /><div><h2>{{ current.title }}</h2><span>{{ activeModel?.name || '模型' }} · {{ current.model }}<template v-if="activeModel?.webSearchEnabled"> · 可联网</template></span></div></div><div><el-button text :icon="current.pinned ? StarFilled : Star" aria-label="置顶" @click="togglePin" /><el-dropdown trigger="click"><el-button text :icon="MoreFilled" aria-label="更多操作" /><template #dropdown><el-dropdown-menu><el-dropdown-item :icon="Edit" @click="rename">重命名</el-dropdown-item><el-dropdown-item :icon="Setting" @click="openSettings">对话设置</el-dropdown-item><el-dropdown-item divided :icon="Delete" @click="remove">删除对话</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div></header>
         <div ref="thread" class="message-thread">
-          <div v-if="!current.messages?.length" class="chat-empty"><span class="brand-symbol">AI</span><h3>从一个问题开始</h3><p>{{ current.systemPrompt || '选择提示词，或直接输入你想处理的事情。' }}</p></div>
-          <article v-for="message in current.messages" :key="message.id" class="message-row" :class="message.role">
+          <div v-if="!displayMessages.length" class="chat-empty"><span class="brand-symbol">AI</span><h3>从一个问题开始</h3><p>{{ current.systemPrompt || '选择提示词，或直接输入你想处理的事情。' }}</p></div>
+          <article v-for="message in displayMessages" :key="message.id" class="message-row" :class="message.role">
             <span class="message-avatar">{{ message.role === 'user' ? '我' : 'AI' }}</span>
             <div class="message-body"><header><strong>{{ message.role === 'user' ? '我' : message.model || '助手' }}</strong><el-button v-if="message.role === 'assistant' && message.status === 'completed'" text :icon="CopyDocument" aria-label="复制回答" @click="copy(message.content)" /></header><div v-if="message.role === 'assistant'" class="markdown-body" :class="{ failed: message.status !== 'completed' }" v-html="renderMarkdown(message.content)"></div><template v-else><p>{{ message.content }}</p><div v-if="message.attachments?.length" class="message-attachments"><span v-for="name in message.attachments" :key="name"><el-icon><Paperclip /></el-icon>{{ name }}</span></div></template><small v-if="message.role === 'assistant' && message.status === 'completed'">{{ message.latencyMs }} ms · {{ message.promptTokens + message.completionTokens }} tokens</small></div>
           </article>

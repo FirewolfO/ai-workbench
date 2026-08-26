@@ -62,7 +62,7 @@ export const workbenchApi = {
   createConversation: (input: { title?: string; providerId?: string; model?: string; systemPrompt?: string; reasoningEffort?: ReasoningEffort } = {}) => unwrap<Conversation>(api.post('/conversations', input)),
   updateConversation: (id: string, input: Partial<Pick<Conversation, 'title' | 'providerId' | 'model' | 'systemPrompt' | 'pinned' | 'reasoningEffort'>>) => unwrap<Conversation>(api.patch(`/conversations/${id}`, input)),
   deleteConversation: (id: string) => unwrap<{ deleted: boolean }>(api.delete(`/conversations/${id}`)),
-  sendMessage: (id: string, content: string, attachmentIds: string[] = []) => unwrap<Message>(api.post(`/conversations/${id}/messages`, { content, attachmentIds })),
+  queueMessage: (id: string, content: string, attachmentIds: string[] = []) => unwrap<Message>(api.post(`/conversations/${id}/messages/async`, { content, attachmentIds })),
   stopGeneration: (id: string) => unwrap<{ stopped: boolean }>(api.post(`/conversations/${id}/stop`)),
   uploadAttachment: (file: File) => {
     const data = new FormData()

@@ -51,7 +51,7 @@ export interface Message {
   promptTokens: number
   completionTokens: number
   latencyMs: number
-  status: 'completed' | 'failed' | 'stopped'
+  status: 'generating' | 'completed' | 'failed' | 'stopped'
   attachments?: string[]
   createdAt: string
 }

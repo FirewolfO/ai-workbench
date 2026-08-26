@@ -22,7 +22,7 @@ const conversations = ref<Conversation[]>([])
 const current = ref<Conversation | null>(null)
 const models = ref<AvailableModel[]>([])
 const prompts = ref<Prompt[]>([])
-type UploadStatus = 'uploading' | 'ready' | 'failed'
+type UploadStatus = 'queued' | 'uploading' | 'ready' | 'failed'
 interface AttachmentUpload {
   localId: string
   file: File
@@ -48,7 +48,8 @@ const selectedModel = computed(() => current.value?.model || pendingModel.value)
 const activeModel = computed(() => models.value.find((item) => item.id === selectedProviderId.value))
 const displayMessages = computed(() => current.value?.messages?.filter((message) => message.status !== 'generating') || [])
 const readyAttachments = computed(() => attachmentUploads.value.flatMap((item) => item.attachment ? [item.attachment] : []))
-const uploadingCount = computed(() => attachmentUploads.value.filter((item) => item.status === 'uploading').length)
+const activeUploadCount = computed(() => attachmentUploads.value.filter((item) => item.status === 'uploading').length)
+const uploadingCount = computed(() => attachmentUploads.value.filter((item) => item.status === 'queued' || item.status === 'uploading').length)
 const failedUploadCount = computed(() => attachmentUploads.value.filter((item) => item.status === 'failed').length)
 const uploadButtonState = computed(() => {
   if (failedUploadCount.value) return 'failed'
@@ -77,6 +78,7 @@ let generationPoll = 0
 let pendingReasoning: { conversationId: string; value: ReasoningEffort } | null = null
 const persistedReasoning = new Map<string, ReasoningEffort>()
 const MAX_ATTACHMENT_SIZE = 8 * 1024 * 1024
+const MAX_CONCURRENT_UPLOADS = 2
 
 async function loadLists() {
   const [conversationList, promptList] = await Promise.all([workbenchApi.conversations(search.value), workbenchApi.prompts()])
@@ -285,12 +287,19 @@ function selectFiles(event: Event) {
       file,
       name: file.name,
       progress: 0,
-      status: oversized ? 'failed' : 'uploading',
+      status: oversized ? 'failed' : 'queued',
       error: oversized ? '文件超过 8 MiB' : '',
       retryable: !oversized,
     })
     attachmentUploads.value.push(item)
-    if (!oversized) void uploadAttachment(item)
+  }
+  pumpUploads()
+}
+function pumpUploads() {
+  while (activeUploadCount.value < MAX_CONCURRENT_UPLOADS) {
+    const next = attachmentUploads.value.find((item) => item.status === 'queued')
+    if (!next) return
+    void uploadAttachment(next)
   }
 }
 async function uploadAttachment(item: AttachmentUpload) {
@@ -315,16 +324,22 @@ async function uploadAttachment(item: AttachmentUpload) {
     item.error = apiMessage(error, '上传失败')
   } finally {
     if (item.controller === controller) item.controller = undefined
+    pumpUploads()
   }
 }
 function retryAttachment(item: AttachmentUpload) {
-  if (item.status === 'failed' && item.retryable) void uploadAttachment(item)
+  if (item.status !== 'failed' || !item.retryable) return
+  item.status = 'queued'
+  item.progress = 0
+  item.error = ''
+  pumpUploads()
 }
 function uploadStatusLabel(item: AttachmentUpload) {
   if (item.status === 'ready') return '完成'
   if (item.status === 'failed') return item.retryable ? '失败' : '超过 8 MiB'
-  if (item.progress >= 100) return '处理中'
-  return item.progress > 0 ? `${item.progress}%` : '等待'
+  if (item.status === 'queued') return '等待上传'
+  if (item.progress >= 100) return '服务器确认中'
+  return item.progress > 0 ? `${item.progress}%` : '正在上传'
 }
 function openFilePicker() {
   if (attachmentUploads.value.length >= 4) {
@@ -337,6 +352,7 @@ function removeAttachment(item: AttachmentUpload) {
   item.controller?.abort()
   attachmentUploads.value = attachmentUploads.value.filter((candidate) => candidate.localId !== item.localId)
   if (item.attachment) void workbenchApi.deleteAttachment(item.attachment.id).catch((error) => ElMessage.error(apiMessage(error, '附件删除失败')))
+  pumpUploads()
 }
 function clearUnusedAttachments() {
   const unused = attachmentUploads.value

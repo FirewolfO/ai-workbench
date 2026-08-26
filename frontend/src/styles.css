@@ -165,6 +165,8 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
 .attachment-list > span, .message-attachments span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 260px; padding: 4px 6px; border-radius: 5px; color: #53615d; background: #edf1f0; font-size: 11px; }
 .attachment-list .attachment-chip { position: relative; isolation: isolate; overflow: hidden; min-height: 29px; padding: 5px 6px; border: 1px solid #dce4e1; background: #f4f6f5; }
 .attachment-chip::before { position: absolute; z-index: -1; inset: 0 auto 0 0; width: max(3px, var(--upload-progress)); background: #a9d8ca; content: ""; transition: width .18s ease; }
+.attachment-chip.is-queued { border-color: #d8dfdd; color: #6b7673; }
+.attachment-chip.is-queued::before { width: 3px; background: #c7cfcd; }
 .attachment-chip.is-uploading { border-color: #80b7a7; }
 .attachment-chip.is-ready { border-color: #91b9ad; background: #e9f3f0; }
 .attachment-chip.is-ready::before { background: #c7e3db; }

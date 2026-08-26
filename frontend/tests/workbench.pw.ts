@@ -85,8 +85,9 @@ test('attachments upload concurrently with independent progress', async ({ page 
   await expect(page.getByText('second-plan.txt')).toBeVisible()
   await expect(page.getByText('third-plan.txt')).toBeVisible()
   await expect(page.getByText('上传附件', { exact: true })).toHaveCount(0)
-  await expect.poll(() => uploadRequests.length).toBe(3)
-  await expect(page.locator('.attachment-chip.is-uploading')).toHaveCount(3)
+  await expect.poll(() => uploadRequests.length).toBe(2)
+  await expect(page.locator('.attachment-chip.is-uploading')).toHaveCount(2)
+  await expect(page.locator('.attachment-chip.is-queued')).toHaveCount(1)
   await expect(page.locator('.attachment-trigger.is-uploading')).toBeVisible()
   if (testInfo.project.name === 'mobile') {
     const rows = await page.locator('.attachment-chip').evaluateAll((items) => items.map((item) => item.getBoundingClientRect().toJSON()))
@@ -94,6 +95,7 @@ test('attachments upload concurrently with independent progress', async ({ page 
     expect(rows[2].y).toBeGreaterThanOrEqual(rows[1].y + rows[1].height)
     await page.screenshot({ path: '../.runtime/screenshots/attachment-upload-mobile.png', fullPage: true })
   }
+  await expect.poll(() => uploadRequests.length).toBe(3)
   await expect(page.locator('.attachment-chip.is-ready')).toHaveCount(3, { timeout: 3_000 })
   await expect(page.locator('.attachment-trigger.is-ready')).toBeVisible()
   await expect(page.locator('.attachment-chip').filter({ hasText: '完成' })).toHaveCount(3)

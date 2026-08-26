@@ -9,9 +9,12 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Insets;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.Gravity;
@@ -52,13 +55,18 @@ public final class MainActivity extends Activity {
     private static final String TAG = "AIWorkbench";
     private static final String APP_URL = "https://ai.lxvb.top";
     static final String UPDATE_PREFERENCES = "app_update";
+    static final String UPDATE_DOWNLOAD_ID = "update_download_id";
+    static final String UPDATE_READY_ID = "update_ready_id";
     private static final int FILE_CHOOSER_REQUEST = 4102;
     private static final int INSTALL_PERMISSION_REQUEST = 4103;
     private static final long UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000L;
+    private static final long UPDATE_DOWNLOAD_POLL_MS = 750L;
 
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
+    private final Handler updateHandler = new Handler(Looper.getMainLooper());
+    private final Runnable updateDownloadPoll = () -> resumeDownloadedUpdate();
     private AppUpdate pendingUpdate;
     private AppUpdate availableUpdate;
     private AppUpdate latestRelease;
@@ -112,6 +120,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (resumeDownloadedUpdate()) return;
         if (System.currentTimeMillis() - lastUpdateCheckAt >= UPDATE_CHECK_INTERVAL_MS) {
             checkForUpdate();
         }
@@ -187,6 +196,7 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        updateHandler.removeCallbacks(updateDownloadPoll);
         if (fileCallback != null) {
             fileCallback.onReceiveValue(null);
             fileCallback = null;
@@ -285,7 +295,13 @@ public final class MainActivity extends Activity {
     }
 
     private void checkForUpdate(boolean userInitiated) {
-        if (getSharedPreferences(UPDATE_PREFERENCES, MODE_PRIVATE).getLong("update_download_id", -1) >= 0) {
+        if (getSharedPreferences(UPDATE_PREFERENCES, MODE_PRIVATE).getLong(UPDATE_READY_ID, -1) >= 0) {
+            updateStatus = "downloaded";
+            notifyWebUpdateStatus();
+            resumeDownloadedUpdate();
+            return;
+        }
+        if (getSharedPreferences(UPDATE_PREFERENCES, MODE_PRIVATE).getLong(UPDATE_DOWNLOAD_ID, -1) >= 0) {
             updateStatus = "downloading";
             notifyWebUpdateStatus();
             return;
@@ -429,12 +445,81 @@ public final class MainActivity extends Activity {
         }
         try {
             long id = ((DownloadManager) getSystemService(DOWNLOAD_SERVICE)).enqueue(request);
-            getSharedPreferences(UPDATE_PREFERENCES, MODE_PRIVATE).edit().putLong("update_download_id", id).apply();
+            getSharedPreferences(UPDATE_PREFERENCES, MODE_PRIVATE).edit()
+                    .putLong(UPDATE_DOWNLOAD_ID, id)
+                    .remove(UPDATE_READY_ID)
+                    .apply();
             updateStatus = "downloading";
             notifyWebUpdateStatus();
+            updateHandler.removeCallbacks(updateDownloadPoll);
+            updateHandler.postDelayed(updateDownloadPoll, UPDATE_DOWNLOAD_POLL_MS);
             Toast.makeText(this, R.string.update_started, Toast.LENGTH_LONG).show();
         } catch (RuntimeException error) {
             Toast.makeText(this, R.string.download_failed, Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private boolean resumeDownloadedUpdate() {
+        updateHandler.removeCallbacks(updateDownloadPoll);
+        long readyID = getSharedPreferences(UPDATE_PREFERENCES, MODE_PRIVATE).getLong(UPDATE_READY_ID, -1);
+        if (readyID >= 0) {
+            openDownloadedUpdate(readyID);
+            return true;
+        }
+        long downloadID = getSharedPreferences(UPDATE_PREFERENCES, MODE_PRIVATE).getLong(UPDATE_DOWNLOAD_ID, -1);
+        if (downloadID < 0) return false;
+
+        DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+        int status = DownloadManager.STATUS_FAILED;
+        try (Cursor cursor = manager.query(new DownloadManager.Query().setFilterById(downloadID))) {
+            if (cursor.moveToFirst()) {
+                status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
+            }
+        } catch (RuntimeException error) {
+            updateHandler.postDelayed(updateDownloadPoll, UPDATE_DOWNLOAD_POLL_MS);
+            return true;
+        }
+        if (status == DownloadManager.STATUS_SUCCESSFUL) {
+            getSharedPreferences(UPDATE_PREFERENCES, MODE_PRIVATE).edit()
+                    .remove(UPDATE_DOWNLOAD_ID)
+                    .putLong(UPDATE_READY_ID, downloadID)
+                    .apply();
+            openDownloadedUpdate(downloadID);
+        } else if (status == DownloadManager.STATUS_FAILED) {
+            getSharedPreferences(UPDATE_PREFERENCES, MODE_PRIVATE).edit().remove(UPDATE_DOWNLOAD_ID).apply();
+            updateStatus = "error";
+            notifyWebUpdateStatus();
+            Toast.makeText(this, R.string.update_download_failed, Toast.LENGTH_LONG).show();
+        } else {
+            updateStatus = "downloading";
+            notifyWebUpdateStatus();
+            updateHandler.postDelayed(updateDownloadPoll, UPDATE_DOWNLOAD_POLL_MS);
+        }
+        return true;
+    }
+
+    private void openDownloadedUpdate(long downloadID) {
+        DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+        Uri apk = manager.getUriForDownloadedFile(downloadID);
+        if (apk == null) {
+            getSharedPreferences(UPDATE_PREFERENCES, MODE_PRIVATE).edit().remove(UPDATE_READY_ID).apply();
+            updateStatus = "error";
+            notifyWebUpdateStatus();
+            Toast.makeText(this, R.string.update_open_failed, Toast.LENGTH_LONG).show();
+            return;
+        }
+        updateStatus = "downloaded";
+        notifyWebUpdateStatus();
+        getSharedPreferences(UPDATE_PREFERENCES, MODE_PRIVATE).edit().remove(UPDATE_READY_ID).apply();
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(apk, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_CLEAR_TOP));
+        } catch (RuntimeException error) {
+            getSharedPreferences(UPDATE_PREFERENCES, MODE_PRIVATE).edit().putLong(UPDATE_READY_ID, downloadID).apply();
+            updateStatus = "error";
+            notifyWebUpdateStatus();
+            Toast.makeText(this, R.string.update_open_failed, Toast.LENGTH_LONG).show();
         }
     }
 

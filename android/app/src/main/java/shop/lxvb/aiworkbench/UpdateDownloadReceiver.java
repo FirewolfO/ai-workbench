@@ -5,7 +5,6 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
-import android.net.Uri;
 import android.widget.Toast;
 
 public final class UpdateDownloadReceiver extends BroadcastReceiver {
@@ -14,7 +13,7 @@ public final class UpdateDownloadReceiver extends BroadcastReceiver {
         if (!DownloadManager.ACTION_DOWNLOAD_COMPLETE.equals(intent.getAction())) return;
         long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
         long expected = context.getSharedPreferences(MainActivity.UPDATE_PREFERENCES, Context.MODE_PRIVATE)
-                .getLong("update_download_id", -1);
+                .getLong(MainActivity.UPDATE_DOWNLOAD_ID, -1);
         if (id < 0 || id != expected) return;
 
         DownloadManager manager = (DownloadManager) context.getSystemService(Context.DOWNLOAD_SERVICE);
@@ -24,23 +23,13 @@ public final class UpdateDownloadReceiver extends BroadcastReceiver {
                 status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
             }
         }
-        context.getSharedPreferences(MainActivity.UPDATE_PREFERENCES, Context.MODE_PRIVATE)
-                .edit().remove("update_download_id").apply();
         if (status != DownloadManager.STATUS_SUCCESSFUL) {
+            context.getSharedPreferences(MainActivity.UPDATE_PREFERENCES, Context.MODE_PRIVATE)
+                    .edit().remove(MainActivity.UPDATE_DOWNLOAD_ID).remove(MainActivity.UPDATE_READY_ID).apply();
             Toast.makeText(context, R.string.update_download_failed, Toast.LENGTH_LONG).show();
             return;
         }
-        Uri apk = manager.getUriForDownloadedFile(id);
-        if (apk == null) {
-            Toast.makeText(context, R.string.update_open_failed, Toast.LENGTH_LONG).show();
-            return;
-        }
-        try {
-            context.startActivity(new Intent(Intent.ACTION_VIEW)
-                    .setDataAndType(apk, "application/vnd.android.package-archive")
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION));
-        } catch (RuntimeException error) {
-            Toast.makeText(context, R.string.update_open_failed, Toast.LENGTH_LONG).show();
-        }
+        context.getSharedPreferences(MainActivity.UPDATE_PREFERENCES, Context.MODE_PRIVATE)
+                .edit().remove(MainActivity.UPDATE_DOWNLOAD_ID).putLong(MainActivity.UPDATE_READY_ID, id).apply();
     }
 }

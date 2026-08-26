@@ -8,7 +8,9 @@ import (
 	"errors"
 	"io"
 	"log"
+	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,6 +80,7 @@ func New(address string, allowedOrigins []string, auth authenticator, service *w
 	mux.Handle("POST /api/v1/conversations/{id}/messages/async", server.userAccess(http.HandlerFunc(server.queueMessage)))
 	mux.Handle("POST /api/v1/conversations/{id}/stop", server.userAccess(http.HandlerFunc(server.stopGeneration)))
 	mux.Handle("POST /api/v1/attachments", server.userAccess(http.HandlerFunc(server.createAttachment)))
+	mux.HandleFunc("GET /api/v1/attachments/{id}/download", server.downloadAttachment)
 	mux.Handle("DELETE /api/v1/attachments/{id}", server.userAccess(http.HandlerFunc(server.deleteAttachment)))
 	mux.Handle("GET /api/v1/content/status", server.userAccess(http.HandlerFunc(server.contentStatus)))
 	mux.Handle("GET /api/v1/news", server.userAccess(http.HandlerFunc(server.news)))
@@ -85,7 +88,7 @@ func New(address string, allowedOrigins []string, auth authenticator, service *w
 	mux.Handle("POST /api/v1/news/summaries", server.userAccess(http.HandlerFunc(server.summarizeNews)))
 	mux.Handle("PUT /api/v1/news/{id}/favorite", server.userAccess(http.HandlerFunc(server.favoriteNews)))
 	mux.Handle("GET /api/v1/frontier", server.userAccess(http.HandlerFunc(server.frontierProjects)))
-	return &http.Server{Addr: address, Handler: server.middleware(mux), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 120 * time.Second}
+	return &http.Server{Addr: address, Handler: server.middleware(mux), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 120 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 120 * time.Second}
 }
 
 func (s *Server) middleware(next http.Handler) http.Handler {
@@ -386,23 +389,47 @@ func (s *Server) stopGeneration(writer http.ResponseWriter, request *http.Reques
 
 func (s *Server) createAttachment(writer http.ResponseWriter, request *http.Request) {
 	request.Body = http.MaxBytesReader(writer, request.Body, (8<<20)+(1<<20))
-	if err := request.ParseMultipartForm(8 << 20); err != nil {
+	multipartReader, err := request.MultipartReader()
+	if err != nil {
 		fail(writer, http.StatusBadRequest, "INVALID_ATTACHMENT", "附件无效或超过 8 MiB")
 		return
 	}
-	file, header, err := request.FormFile("file")
+	for {
+		part, err := multipartReader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			fail(writer, http.StatusBadRequest, "INVALID_ATTACHMENT", "附件无效或超过 8 MiB")
+			return
+		}
+		if part.FormName() != "file" {
+			_ = part.Close()
+			continue
+		}
+		result, createErr := s.workbench.CreateAttachmentFromReader(actor(request), part.FileName(), part.Header.Get("Content-Type"), part)
+		_ = part.Close()
+		respond(writer, result, createErr, http.StatusCreated)
+		return
+	}
+	fail(writer, http.StatusBadRequest, "INVALID_ATTACHMENT", "请选择要上传的附件")
+}
+
+func (s *Server) downloadAttachment(writer http.ResponseWriter, request *http.Request) {
+	attachment, file, err := s.workbench.OpenGeneratedAttachment(request.PathValue("id"), request.URL.Query().Get("token"))
 	if err != nil {
-		fail(writer, http.StatusBadRequest, "INVALID_ATTACHMENT", "请选择要上传的附件")
+		failError(writer, err)
 		return
 	}
 	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, (8<<20)+1))
-	if err != nil || len(data) > 8<<20 {
-		fail(writer, http.StatusBadRequest, "INVALID_ATTACHMENT", "附件无效或超过 8 MiB")
-		return
+	disposition := mime.FormatMediaType("attachment", map[string]string{"filename": attachment.Name})
+	writer.Header().Set("Content-Type", attachment.ContentType)
+	writer.Header().Set("Content-Disposition", disposition)
+	writer.Header().Set("Content-Length", strconv.FormatInt(attachment.Size, 10))
+	writer.WriteHeader(http.StatusOK)
+	if _, err := io.Copy(writer, file); err != nil {
+		log.Printf("AI Workbench attachment download failed id=%s: %v", attachment.ID, err)
 	}
-	result, err := s.workbench.CreateAttachment(actor(request), header.Filename, header.Header.Get("Content-Type"), data)
-	respond(writer, result, err, http.StatusCreated)
 }
 
 func (s *Server) deleteAttachment(writer http.ResponseWriter, request *http.Request) {

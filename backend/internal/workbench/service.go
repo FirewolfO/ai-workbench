@@ -1,13 +1,19 @@
 package workbench
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -23,6 +29,9 @@ import (
 	"ai-workbench/internal/security"
 	"ai-workbench/internal/store"
 
+	"github.com/gpdf-dev/gpdf"
+	"github.com/gpdf-dev/gpdf/document"
+	"github.com/gpdf-dev/gpdf/template"
 	"gorm.io/gorm"
 )
 
@@ -38,7 +47,9 @@ var (
 
 const (
 	maxAttachmentBytes          = 8 << 20
+	maxGeneratedAttachmentBytes = 40 << 20
 	attachmentTTL               = time.Hour
+	generatedAttachmentTTL      = 7 * 24 * time.Hour
 	modelCatalogRefreshInterval = 5 * time.Minute
 	asyncGenerationTimeout      = 4 * time.Minute
 	protocolChatCompletions     = "chat_completions"
@@ -101,6 +112,8 @@ type messageGeneration struct {
 	conversation *model.Conversation
 	provider     *model.Provider
 	messages     []llm.Message
+	content      string
+	attachments  []consumedAttachment
 	apiKey       string
 	assistant    *model.Message
 	ctx          context.Context
@@ -927,12 +940,29 @@ func (s *Service) startMessage(ctx context.Context, actor identity.Actor, conver
 	started = true
 	return &messageGeneration{
 		actor: actor, conversation: conversation, provider: provider, messages: messages, apiKey: key,
-		assistant: assistant, ctx: modelContext, cancel: cancel,
+		content: content, attachments: attachments, assistant: assistant, ctx: modelContext, cancel: cancel,
 	}, nil
 }
 
 func (s *Service) completeMessage(generation *messageGeneration) (*model.Message, error) {
 	defer s.endGeneration(generation.actor, generation.conversation.ID, generation.cancel)
+	startedAt := time.Now()
+	if isImagePDFTask(generation.content, generation.attachments) {
+		content, err := s.createImagePDF(generation.actor, generation.attachments)
+		if err != nil {
+			if saveErr := s.updateGeneratedMessage(generation.assistant, map[string]any{"content": "PDF 生成失败，请确认附件是有效的 JPG 或 PNG 图片", "status": "failed"}); saveErr != nil {
+				return nil, saveErr
+			}
+			return nil, err
+		}
+		updates := map[string]any{
+			"content": content, "model": "文件工具", "latency_ms": time.Since(startedAt).Milliseconds(), "status": "completed",
+		}
+		if err := s.updateGeneratedMessage(generation.assistant, updates); err != nil {
+			return nil, err
+		}
+		return generation.assistant, nil
+	}
 	result, err := s.models.Complete(generation.ctx, llm.CompletionRequest{
 		BaseURL: generation.provider.BaseURL, APIKey: generation.apiKey, Model: generation.conversation.Model, Protocol: generation.provider.Protocol,
 		WebSearch: generation.provider.WebSearchEnabled, Messages: generation.messages, Temperature: 0.7, ReasoningEffort: generation.conversation.ReasoningEffort,
@@ -1016,33 +1046,95 @@ func (s *Service) endGeneration(actor identity.Actor, conversationID string, can
 }
 
 func (s *Service) CreateAttachment(actor identity.Actor, name, contentType string, data []byte) (*model.Attachment, error) {
+	return s.createAttachmentFromReader(actor, name, contentType, bytes.NewReader(data), maxAttachmentBytes, attachmentTTL)
+}
+
+func (s *Service) CreateAttachmentFromReader(actor identity.Actor, name, contentType string, reader io.Reader) (*model.Attachment, error) {
+	return s.createAttachmentFromReader(actor, name, contentType, reader, maxAttachmentBytes, attachmentTTL)
+}
+
+func (s *Service) createAttachmentFromReader(actor identity.Actor, name, contentType string, reader io.Reader, maxBytes int64, ttl time.Duration) (*model.Attachment, error) {
 	name = strings.TrimSpace(filepath.Base(name))
-	if name == "" || name == "." || len([]rune(name)) > 255 || len(data) == 0 || len(data) > maxAttachmentBytes {
+	if name == "" || name == "." || len([]rune(name)) > 255 || reader == nil {
 		return nil, ErrInvalid
 	}
 	if err := s.cleanupExpiredAttachments(); err != nil {
 		return nil, err
 	}
-	if contentType = strings.TrimSpace(strings.Split(contentType, ";")[0]); contentType == "" {
-		contentType = http.DetectContentType(data)
+	if err := os.MkdirAll(s.attachmentDir, 0o700); err != nil {
+		return nil, err
 	}
-	attachment := &model.Attachment{ID: newID("att"), OwnerID: ownerID(actor), Name: name, ContentType: contentType, Size: int64(len(data)), ExpiresAt: time.Now().UTC().Add(attachmentTTL)}
+	temporary, err := os.CreateTemp(s.attachmentDir, ".upload-*")
+	if err != nil {
+		return nil, err
+	}
+	temporaryPath := temporary.Name()
+	keepTemporary := false
+	defer func() {
+		_ = temporary.Close()
+		if !keepTemporary {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	size, err := io.Copy(temporary, io.LimitReader(reader, maxBytes+1))
+	if closeErr := temporary.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return nil, err
+	}
+	if size == 0 || size > maxBytes {
+		return nil, ErrInvalid
+	}
+	if contentType = strings.TrimSpace(strings.Split(contentType, ";")[0]); contentType == "" {
+		file, err := os.Open(temporaryPath)
+		if err != nil {
+			return nil, err
+		}
+		header := make([]byte, 512)
+		read, readErr := file.Read(header)
+		_ = file.Close()
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return nil, readErr
+		}
+		contentType = http.DetectContentType(header[:read])
+	}
+	attachment := &model.Attachment{ID: newID("att"), OwnerID: ownerID(actor), Name: name, ContentType: contentType, Size: size, ExpiresAt: time.Now().UTC().Add(ttl)}
 	extension := filepath.Ext(name)
 	if len(extension) > 12 {
 		extension = ""
 	}
 	attachment.Path = filepath.Join(s.attachmentDir, attachment.ID+extension)
-	if err := os.MkdirAll(s.attachmentDir, 0o700); err != nil {
+	if err := os.Rename(temporaryPath, attachment.Path); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(attachment.Path, data, 0o600); err != nil {
-		return nil, err
-	}
+	keepTemporary = true
 	if err := s.database.DB.Create(attachment).Error; err != nil {
 		_ = os.Remove(attachment.Path)
 		return nil, err
 	}
 	return attachment, nil
+}
+
+func (s *Service) OpenGeneratedAttachment(id, token string) (*model.Attachment, io.ReadCloser, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, nil, ErrNotFound
+	}
+	digest := sha256.Sum256([]byte(token))
+	var attachment model.Attachment
+	if err := s.database.DB.Where("id = ? AND download_token_hash = ? AND expires_at > ?", id, hex.EncodeToString(digest[:]), time.Now().UTC()).First(&attachment).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil, ErrNotFound
+	} else if err != nil {
+		return nil, nil, err
+	}
+	file, err := os.Open(attachment.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil, ErrNotFound
+	} else if err != nil {
+		return nil, nil, err
+	}
+	return &attachment, file, nil
 }
 
 func (s *Service) DeleteAttachment(actor identity.Actor, id string) error {
@@ -1112,6 +1204,7 @@ func completionContent(content string, attachments []consumedAttachment) any {
 	}
 	for _, attachment := range attachments {
 		if strings.HasPrefix(attachment.record.ContentType, "image/") {
+			parts = append(parts, llm.ContentPart{Type: "text", Text: fmt.Sprintf("以下是已上传的原始图片附件 %s：", attachment.record.Name)})
 			parts = append(parts, llm.ContentPart{Type: "image_url", ImageURL: &llm.ImageURL{URL: "data:" + attachment.record.ContentType + ";base64," + base64.StdEncoding.EncodeToString(attachment.data)}})
 			continue
 		}
@@ -1122,6 +1215,72 @@ func completionContent(content string, attachments []consumedAttachment) any {
 		parts = append(parts, llm.ContentPart{Type: "text", Text: fmt.Sprintf("附件 %s (%s):\n%s", attachment.record.Name, attachment.record.ContentType, text)})
 	}
 	return parts
+}
+
+func isImagePDFTask(content string, attachments []consumedAttachment) bool {
+	content = strings.ToLower(strings.TrimSpace(content))
+	if len(attachments) == 0 || !strings.Contains(content, "pdf") {
+		return false
+	}
+	requested := false
+	for _, keyword := range []string{"合并", "转换", "转成", "换成", "生成", "制作", "convert", "merge"} {
+		if strings.Contains(content, keyword) {
+			requested = true
+			break
+		}
+	}
+	if !requested {
+		return false
+	}
+	for _, attachment := range attachments {
+		if attachment.record.ContentType != "image/jpeg" && attachment.record.ContentType != "image/png" {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Service) createImagePDF(actor identity.Actor, attachments []consumedAttachment) (string, error) {
+	doc := gpdf.NewDocument(
+		gpdf.WithPageSize(gpdf.A4),
+		gpdf.WithMargins(document.UniformEdges(document.Mm(10))),
+	)
+	for _, attachment := range attachments {
+		configuration, _, err := image.DecodeConfig(bytes.NewReader(attachment.data))
+		if err != nil || configuration.Width <= 0 || configuration.Height <= 0 {
+			return "", ErrInvalid
+		}
+		page := doc.AddPage()
+		page.AutoRow(func(row *template.RowBuilder) {
+			row.Col(12, func(column *template.ColBuilder) {
+				if float64(configuration.Width)/float64(configuration.Height) >= 190.0/277.0 {
+					column.Image(attachment.data, template.FitWidth(document.Mm(190)))
+				} else {
+					column.Image(attachment.data, template.FitHeight(document.Mm(277)))
+				}
+			})
+		})
+	}
+	data, err := doc.Generate()
+	if err != nil {
+		return "", err
+	}
+	attachment, err := s.createAttachmentFromReader(actor, "图片合并.pdf", "application/pdf", bytes.NewReader(data), maxGeneratedAttachmentBytes, generatedAttachmentTTL)
+	if err != nil {
+		return "", err
+	}
+	tokenBytes := make([]byte, 24)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		_ = s.DeleteAttachment(actor, attachment.ID)
+		return "", err
+	}
+	token := hex.EncodeToString(tokenBytes)
+	digest := sha256.Sum256([]byte(token))
+	if err := s.database.DB.Model(attachment).Update("download_token_hash", hex.EncodeToString(digest[:])).Error; err != nil {
+		_ = s.DeleteAttachment(actor, attachment.ID)
+		return "", err
+	}
+	return fmt.Sprintf("已将 %d 张图片按上传顺序合并为 PDF。\n\n[下载合并后的 PDF](/api/v1/attachments/%s/download?token=%s)\n\n文件将在 7 天后自动删除。", len(attachments), attachment.ID, url.QueryEscape(token)), nil
 }
 
 func (s *Service) cleanupExpiredAttachments() error {

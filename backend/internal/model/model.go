@@ -98,14 +98,15 @@ type InternalUser struct {
 }
 
 type Attachment struct {
-	ID          string    `gorm:"primaryKey;size:40" json:"id"`
-	OwnerID     string    `gorm:"size:120;index;not null" json:"-"`
-	Name        string    `gorm:"size:255;not null" json:"name"`
-	ContentType string    `gorm:"size:120;not null" json:"contentType"`
-	Path        string    `gorm:"size:1000;not null" json:"-"`
-	Size        int64     `gorm:"not null" json:"size"`
-	ExpiresAt   time.Time `gorm:"index;not null" json:"expiresAt"`
-	CreatedAt   time.Time `json:"createdAt"`
+	ID                string    `gorm:"primaryKey;size:40" json:"id"`
+	OwnerID           string    `gorm:"size:120;index;not null" json:"-"`
+	Name              string    `gorm:"size:255;not null" json:"name"`
+	ContentType       string    `gorm:"size:120;not null" json:"contentType"`
+	Path              string    `gorm:"size:1000;not null" json:"-"`
+	DownloadTokenHash string    `gorm:"size:64;index" json:"-"`
+	Size              int64     `gorm:"not null" json:"size"`
+	ExpiresAt         time.Time `gorm:"index;not null" json:"expiresAt"`
+	CreatedAt         time.Time `json:"createdAt"`
 }
 
 type OAuthState struct {

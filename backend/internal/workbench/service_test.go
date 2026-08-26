@@ -1,9 +1,16 @@
 package workbench
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"io"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -377,6 +384,64 @@ func TestAttachmentIsConsumedAndDeletedAfterMessage(t *testing.T) {
 	loaded, _ := service.Conversation(alice, conversation.ID)
 	if len(loaded.Messages) != 2 || len(loaded.Messages[0].Attachments) != 1 || loaded.Messages[0].Attachments[0] != "notes.txt" {
 		t.Fatalf("stored attachment metadata = %#v", loaded.Messages)
+	}
+}
+
+func TestImageAttachmentsCanBeMergedIntoDownloadablePDF(t *testing.T) {
+	models := &captureModels{}
+	service := testServiceWithModels(t, models)
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
+	createAvailableProvider(t, service, admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	conversation, _ := service.CreateConversation(alice, ConversationInput{})
+
+	attachmentIDs := make([]string, 0, 2)
+	for index, dimensions := range [][2]int{{640, 360}, {360, 640}} {
+		var data bytes.Buffer
+		picture := image.NewRGBA(image.Rect(0, 0, dimensions[0], dimensions[1]))
+		fill := color.RGBA{R: uint8(40 + index*80), G: 120, B: 180, A: 255}
+		for y := 0; y < dimensions[1]; y++ {
+			for x := 0; x < dimensions[0]; x++ {
+				picture.SetRGBA(x, y, fill)
+			}
+		}
+		if err := jpeg.Encode(&data, picture, &jpeg.Options{Quality: 80}); err != nil {
+			t.Fatal(err)
+		}
+		attachment, err := service.CreateAttachmentFromReader(alice, fmt.Sprintf("screen-%d.jpg", index+1), "image/jpeg", bytes.NewReader(data.Bytes()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		attachmentIDs = append(attachmentIDs, attachment.ID)
+	}
+
+	answer, err := service.SendMessage(context.Background(), alice, conversation.ID, MessageInput{
+		Content: "把这两张图片合并成一个 PDF 文件", AttachmentIDs: attachmentIDs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Model != "文件工具" || !strings.Contains(answer.Content, "下载合并后的 PDF") || models.request.Model != "" {
+		t.Fatalf("answer = %#v, model request = %#v", answer, models.request)
+	}
+	match := regexp.MustCompile(`/attachments/([^/]+)/download\?token=([a-f0-9]+)`).FindStringSubmatch(answer.Content)
+	if len(match) != 3 {
+		t.Fatalf("download link not found in %q", answer.Content)
+	}
+	if _, _, err := service.OpenGeneratedAttachment(match[1], "incorrect-token"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("incorrect token error = %v", err)
+	}
+	record, file, err := service.OpenGeneratedAttachment(match[1], match[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	header := make([]byte, 5)
+	if _, err := io.ReadFull(file, header); err != nil || string(header) != "%PDF-" {
+		t.Fatalf("generated file header = %q, %v", header, err)
+	}
+	if record.ContentType != "application/pdf" || record.Size <= 100 || time.Until(record.ExpiresAt) < 6*24*time.Hour {
+		t.Fatalf("generated attachment = %#v", record)
 	}
 }
 

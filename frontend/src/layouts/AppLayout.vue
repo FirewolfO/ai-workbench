@@ -14,7 +14,7 @@ const auth = useAuthStore()
 const drawerOpen = ref(false)
 const isNativeApp = ref(false)
 const availableUpdate = ref<{ version: string; size: number } | null>(null)
-const updateStatus = ref<'idle' | 'checking' | 'current' | 'available' | 'error' | 'downloading'>('idle')
+const updateStatus = ref<'idle' | 'checking' | 'current' | 'available' | 'error' | 'downloading' | 'downloaded'>('idle')
 const currentAppVersion = ref('')
 let updateCheckTimer: number | undefined
 const pageTitle = computed(() => String(route.meta.title || 'AI 工作台'))
@@ -31,6 +31,7 @@ const updateStatusText = computed(() => {
   if (updateStatus.value === 'available' && availableUpdate.value) return `发现 v${availableUpdate.value.version}`
   if (updateStatus.value === 'current') return currentAppVersion.value ? `已是最新版 · v${currentAppVersion.value}` : '已是最新版'
   if (updateStatus.value === 'downloading') return '正在下载安装包'
+  if (updateStatus.value === 'downloaded') return '安装包已下载，正在打开安装'
   if (updateStatus.value === 'error') return '检查失败，点击重试'
   return currentAppVersion.value ? `当前 v${currentAppVersion.value}` : '点击检查最新版本'
 })
@@ -49,7 +50,7 @@ function receiveUpdateStatus(event: Event) {
   if (!detail?.status) return
   isNativeApp.value = true
   if (detail.currentVersion) currentAppVersion.value = detail.currentVersion
-  if (['idle', 'checking', 'current', 'available', 'error', 'downloading'].includes(detail.status)) updateStatus.value = detail.status as typeof updateStatus.value
+  if (['idle', 'checking', 'current', 'available', 'error', 'downloading', 'downloaded'].includes(detail.status)) updateStatus.value = detail.status as typeof updateStatus.value
   if (detail.status === 'available' && detail.latestVersion) availableUpdate.value = { version: detail.latestVersion, size: Number(detail.size) || 0 }
   if (detail.status === 'current') availableUpdate.value = null
   if (updateStatus.value !== 'checking' && updateCheckTimer) window.clearTimeout(updateCheckTimer)

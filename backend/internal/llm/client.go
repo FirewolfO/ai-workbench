@@ -154,7 +154,8 @@ func (c *HTTPClient) Models(ctx context.Context, baseURL, apiKey string) ([]stri
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("模型服务返回 %d", response.StatusCode)
+		message, _ := io.ReadAll(io.LimitReader(response.Body, 2048))
+		return nil, fmt.Errorf("模型服务返回 %d: %s", response.StatusCode, providerMessage(message))
 	}
 	if !isJSON(response.Header.Get("Content-Type")) {
 		return nil, fmt.Errorf("模型列表返回 %s 而不是 JSON，请检查 Base URL 是否指向 API 根路径（通常以 /v1 结尾）", contentType(response.Header.Get("Content-Type")))

@@ -8,6 +8,7 @@ const conversation = {
     { id: 'msg_2', conversationId: 'cnv_demo', role: 'assistant', content: '## 评审结论\n\n建议先补齐回滚和监控方案。', model: 'company-model', promptTokens: 42, completionTokens: 18, latencyMs: 860, status: 'completed', createdAt: '2026-08-11T10:00:03Z' },
   ],
 }
+const newConversation = { ...conversation, id: 'cnv_new', title: '新对话', pinned: false, messageCount: 0, lastMessage: '', messages: [] }
 
 const frontier = {
   total: 1264, generatedAt: '2026-08-12T07:00:00Z', lastSuccessAt: '2026-08-12T03:00:00Z', githubTokenSet: true, stale: false,
@@ -35,10 +36,29 @@ test.beforeEach(async ({ page }) => {
         data = { ...conversation, ...(route.request().postDataJSON() as object) }
       } else data = conversation
     }
-    else if (path.endsWith('/conversations')) data = [conversation]
+    else if (path.endsWith('/conversations/cnv_new')) data = newConversation
+    else if (path.endsWith('/conversations')) {
+      data = route.request().method() === 'POST'
+        ? { ...newConversation, ...(route.request().postDataJSON() as object) }
+        : [conversation]
+    }
     else if (path.endsWith('/frontier')) data = frontier
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 'OK', message: 'success', data }) })
   })
+})
+
+test('model selection is available before creating a conversation', async ({ page }, testInfo) => {
+  await page.goto('/chat')
+  await expect(page.getByRole('combobox', { name: '供应商' })).toBeVisible()
+  await expect(page.getByRole('combobox', { name: '模型' })).toBeVisible()
+  await page.getByRole('combobox', { name: '模型' }).click()
+  await page.getByRole('option', { name: 'company-model-pro' }).click()
+  await page.screenshot({ path: `../.runtime/screenshots/chat-empty-${testInfo.project.name}.png`, fullPage: true })
+
+  const createRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/conversations'))
+  await page.getByRole('button', { name: '新建对话' }).click()
+  expect((await createRequest).postDataJSON()).toMatchObject({ providerId: 'prv_demo', model: 'company-model-pro' })
+  await expect(page).toHaveURL(/\/chat\/cnv_new$/)
 })
 
 test('frontier discovery is responsive without overflow', async ({ page }, testInfo) => {

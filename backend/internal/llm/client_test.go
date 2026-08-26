@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -79,5 +80,19 @@ func TestConnectionTestRejectsHTMLSuccessPage(t *testing.T) {
 	defer server.Close()
 	if _, err := New().Test(context.Background(), server.URL+"/keys", "secret", "test-model"); err == nil {
 		t.Fatal("expected HTML response to be rejected")
+	}
+}
+
+func TestModelsIncludesUpstreamErrorMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusForbidden)
+		_, _ = writer.Write([]byte(`{"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}`))
+	}))
+	defer server.Close()
+
+	_, err := New().Models(context.Background(), server.URL, "secret")
+	if err == nil || !strings.Contains(err.Error(), "Insufficient account balance") {
+		t.Fatalf("Models() error = %v", err)
 	}
 }

@@ -153,6 +153,7 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
 .message-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .thinking span { margin-left: 4px; color: #7a8582; font-size: 11px; }
 .chat-empty, .workspace-empty { display: grid; place-items: center; align-content: center; height: 100%; text-align: center; }
+.workspace-empty { flex: 1; min-height: 0; height: auto; }
 .chat-empty { min-height: 50vh; }
 .chat-empty h3, .workspace-empty h2 { margin: 18px 0 7px; font-size: 19px; }
 .chat-empty p, .workspace-empty p { width: min(480px, 90%); margin: 0; color: #7c8784; font-size: 13px; line-height: 1.6; }

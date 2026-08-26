@@ -24,16 +24,20 @@ const current = ref<Conversation | null>(null)
 const models = ref<AvailableModel[]>([])
 const prompts = ref<Prompt[]>([])
 const attachments = ref<Attachment[]>([])
+const pendingProviderId = ref('')
+const pendingModel = ref('')
 const promptOpen = ref(false)
 const settingsOpen = ref(false)
 const mobileConversationsOpen = ref(false)
 const thread = ref<HTMLElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const settings = reactive({ providerId: '', model: '', systemPrompt: '', reasoningEffort: 'medium' as ReasoningEffort })
-const activeModel = computed(() => models.value.find((item) => item.id === current.value?.providerId))
+const selectedProviderId = computed(() => current.value?.providerId || pendingProviderId.value)
+const selectedModel = computed(() => current.value?.model || pendingModel.value)
+const activeModel = computed(() => models.value.find((item) => item.id === selectedProviderId.value))
 const activeModelNames = computed(() => {
   const result = [...(activeModel.value?.models || [])]
-  const selected = current.value?.model
+  const selected = selectedModel.value
   if (selected && !result.includes(selected)) result.unshift(selected)
   return result
 })
@@ -58,9 +62,16 @@ async function loadLists() {
 async function refreshModels(refresh = false, reportError = false) {
   if (refreshingModels.value) return
   refreshingModels.value = true
-  try { models.value = await workbenchApi.models(refresh) }
+  try { models.value = await workbenchApi.models(refresh); syncPendingModelSelection() }
   catch (error) { if (reportError) ElMessage.error(apiMessage(error, '模型列表加载失败')) }
   finally { refreshingModels.value = false }
+}
+function syncPendingModelSelection() {
+  if (current.value) return
+  const provider = models.value.find((item) => item.id === pendingProviderId.value) || models.value[0]
+  pendingProviderId.value = provider?.id || ''
+  if (!provider) { pendingModel.value = ''; return }
+  if (!provider.models.includes(pendingModel.value)) pendingModel.value = provider.defaultModel
 }
 function refreshModelsWhenVisible() {
   if (!document.hidden) void refreshModels(true)
@@ -91,7 +102,12 @@ async function createConversation() {
     if (auth.isAdmin) await router.push('/providers')
     return
   }
-  try { const conversation = await workbenchApi.createConversation(); conversations.value.unshift(conversation); mobileConversationsOpen.value = false; await router.push(`/chat/${conversation.id}`) }
+  try {
+    const conversation = await workbenchApi.createConversation({ providerId: selectedProviderId.value, model: selectedModel.value })
+    conversations.value.unshift(conversation)
+    mobileConversationsOpen.value = false
+    await router.push(`/chat/${conversation.id}`)
+  }
   catch (error) { ElMessage.error(apiMessage(error, '创建对话失败')) }
 }
 async function send() {
@@ -125,16 +141,22 @@ async function stop() {
   } catch (error) { stopping.value = false; ElMessage.error(apiMessage(error, '停止失败')) }
 }
 async function changeProvider(providerId: string) {
-  if (!current.value || sending.value || switchingModel.value) return
+  if (sending.value || switchingModel.value) return
   const selected = models.value.find((item) => item.id === providerId)
   if (!selected) return
+  if (!current.value) {
+    pendingProviderId.value = providerId
+    pendingModel.value = selected.defaultModel
+    return
+  }
   switchingModel.value = true
   try { applyConversationUpdate(await workbenchApi.updateConversation(current.value.id, { providerId, model: selected.defaultModel })) }
   catch (error) { ElMessage.error(apiMessage(error, '模型切换失败')) }
   finally { switchingModel.value = false }
 }
 async function changeSpecificModel(model: string) {
-  if (!current.value || sending.value || switchingModel.value || !model) return
+  if (sending.value || switchingModel.value || !model) return
+  if (!current.value) { pendingModel.value = model; return }
   switchingModel.value = true
   try { applyConversationUpdate(await workbenchApi.updateConversation(current.value.id, { model })) }
   catch (error) { ElMessage.error(apiMessage(error, '模型切换失败')) }
@@ -235,12 +257,12 @@ onBeforeUnmount(() => {
       </div>
     </aside>
     <div v-loading="loading" class="chat-main">
+      <div class="chat-model-bar">
+        <label><span>供应商</span><el-select :model-value="selectedProviderId" filterable :disabled="!models.length || sending || switchingModel" aria-label="供应商" @change="changeProvider"><el-option v-for="item in models" :key="item.id" :label="item.name" :value="item.id" /></el-select></label>
+        <label><span>模型</span><el-select :model-value="selectedModel" filterable :disabled="!activeModelNames.length || sending || switchingModel" aria-label="模型" @change="changeSpecificModel"><el-option v-for="item in activeModelNames" :key="item" :label="item" :value="item" /></el-select></label>
+        <el-tooltip content="刷新模型列表"><el-button text :icon="Refresh" :loading="refreshingModels" aria-label="刷新模型列表" @click="refreshModels(true, true)" /></el-tooltip>
+      </div>
       <template v-if="current">
-        <div class="chat-model-bar">
-          <label><span>供应商</span><el-select :model-value="current.providerId" filterable :disabled="sending || switchingModel" aria-label="供应商" @change="changeProvider"><el-option v-for="item in models" :key="item.id" :label="item.name" :value="item.id" /></el-select></label>
-          <label><span>模型</span><el-select :model-value="current.model" filterable :disabled="sending || switchingModel" aria-label="模型" @change="changeSpecificModel"><el-option v-for="item in activeModelNames" :key="item" :label="item" :value="item" /></el-select></label>
-          <el-tooltip content="刷新模型列表"><el-button text :icon="Refresh" :loading="refreshingModels" aria-label="刷新模型列表" @click="refreshModels(true, true)" /></el-tooltip>
-        </div>
         <header class="chat-header"><div class="chat-title"><el-button class="mobile-conversation-toggle" text :icon="Menu" aria-label="打开对话列表" @click="mobileConversationsOpen = true" /><div><h2>{{ current.title }}</h2><span>{{ activeModel?.name || '模型' }} · {{ current.model }}</span></div></div><div><el-button text :icon="current.pinned ? StarFilled : Star" aria-label="置顶" @click="togglePin" /><el-dropdown trigger="click"><el-button text :icon="MoreFilled" aria-label="更多操作" /><template #dropdown><el-dropdown-menu><el-dropdown-item :icon="Edit" @click="rename">重命名</el-dropdown-item><el-dropdown-item :icon="Setting" @click="openSettings">对话设置</el-dropdown-item><el-dropdown-item divided :icon="Delete" @click="remove">删除对话</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div></header>
         <div ref="thread" class="message-thread">
           <div v-if="!current.messages?.length" class="chat-empty"><span class="brand-symbol">AI</span><h3>从一个问题开始</h3><p>{{ current.systemPrompt || '选择提示词，或直接输入你想处理的事情。' }}</p></div>

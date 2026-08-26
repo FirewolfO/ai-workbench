@@ -58,7 +58,7 @@ func TestCompleteResponsesWithWebSearchAndCitations(t *testing.T) {
 		_, _ = writer.Write([]byte(`{
 			"model":"gpt-5.5","status":"completed",
 			"output":[
-				{"type":"web_search_call","status":"completed","action":{"sources":[{"url":"https://example.com/weather","title":"天气数据"}]}},
+				{"type":"web_search_call","status":"completed","action":{"sources":[{"type":"api","name":"oai-weather"},{"url":"https://example.com/weather","title":"天气数据"}]}},
 				{"type":"message","status":"completed","content":[{"type":"output_text","text":"北京 25°C，多云。","annotations":[{"type":"url_citation","url":"https://example.com/weather","title":"天气数据"},{"type":"url_citation","url":"https://example.org/report","title":"气象报告"}]}]}
 			],
 			"usage":{"input_tokens":42,"output_tokens":12}
@@ -78,6 +78,9 @@ func TestCompleteResponsesWithWebSearchAndCitations(t *testing.T) {
 	}
 	if strings.Count(result.Content, "https://example.com/weather") != 1 || !strings.Contains(result.Content, "https://example.org/report") {
 		t.Fatalf("citations = %q", result.Content)
+	}
+	if !strings.Contains(result.Content, "- oai-weather") {
+		t.Fatalf("API source = %q", result.Content)
 	}
 }
 

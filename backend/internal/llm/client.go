@@ -149,6 +149,7 @@ type responsesOutputItem struct {
 		Sources []struct {
 			URL   string `json:"url"`
 			Title string `json:"title"`
+			Name  string `json:"name"`
 		} `json:"sources"`
 	} `json:"action"`
 	Content []struct {
@@ -262,6 +263,7 @@ func responseMessages(messages []Message) []map[string]any {
 type responseSource struct {
 	URL   string
 	Title string
+	Name  string
 }
 
 func responseOutput(output []responsesOutputItem) (string, []responseSource, bool) {
@@ -272,7 +274,7 @@ func responseOutput(output []responsesOutputItem) (string, []responseSource, boo
 		if item.Type == "web_search_call" {
 			usedWebSearch = true
 			for _, source := range item.Action.Sources {
-				sources = append(sources, responseSource{URL: source.URL, Title: source.Title})
+				sources = append(sources, responseSource{URL: source.URL, Title: source.Title, Name: source.Name})
 			}
 		}
 		if item.Type != "message" {
@@ -294,10 +296,29 @@ func responseOutput(output []responsesOutputItem) (string, []responseSource, boo
 
 func appendSources(content string, sources []responseSource) string {
 	seen := make(map[string]bool, len(sources))
-	links := make([]string, 0, len(sources))
+	items := make([]string, 0, len(sources))
 	for _, source := range sources {
 		value := strings.TrimSpace(source.URL)
-		if value == "" || seen[value] {
+		label := strings.TrimSpace(source.Title)
+		if label == "" {
+			label = strings.TrimSpace(source.Name)
+		}
+		label = strings.NewReplacer("[", "", "]", "", "\r", " ", "\n", " ").Replace(label)
+		if len([]rune(label)) > 160 {
+			label = string([]rune(label)[:160])
+		}
+		if value == "" {
+			key := "name:" + label
+			if label != "" && !seen[key] {
+				seen[key] = true
+				items = append(items, "- "+label)
+			}
+			if len(items) >= 8 {
+				break
+			}
+			continue
+		}
+		if seen[value] {
 			continue
 		}
 		target, err := url.Parse(value)
@@ -305,20 +326,18 @@ func appendSources(content string, sources []responseSource) string {
 			continue
 		}
 		seen[value] = true
-		title := strings.TrimSpace(source.Title)
-		if title == "" {
-			title = target.Host
+		if label == "" {
+			label = target.Host
 		}
-		title = strings.NewReplacer("[", "", "]", "").Replace(title)
-		links = append(links, fmt.Sprintf("- [%s](<%s>)", title, value))
-		if len(links) >= 8 {
+		items = append(items, fmt.Sprintf("- [%s](<%s>)", label, value))
+		if len(items) >= 8 {
 			break
 		}
 	}
-	if len(links) == 0 {
+	if len(items) == 0 {
 		return content
 	}
-	return strings.TrimSpace(content) + "\n\n**来源**\n\n" + strings.Join(links, "\n")
+	return strings.TrimSpace(content) + "\n\n**来源**\n\n" + strings.Join(items, "\n")
 }
 
 func providerReasoningEffort(value string) string {

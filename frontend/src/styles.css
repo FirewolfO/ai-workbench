@@ -25,6 +25,16 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
 .nav-menu .el-menu-item { height: 44px; margin: 3px 0; border-radius: 6px; color: #bdd0cb; }
 .nav-menu .el-menu-item:hover { color: #fff; background: #24483f; }
 .nav-menu .el-menu-item.is-active { color: #fff; background: #2e5a4f; }
+.sidebar-update { display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; width: 100%; min-height: 52px; padding: 7px 9px; border: 1px solid #31534b; border-radius: 6px; color: #c8d8d4; text-align: left; background: #1d4038; cursor: pointer; }
+.sidebar-update:hover { border-color: #52776e; background: #24483f; }
+.sidebar-update > .el-icon { font-size: 16px; }
+.sidebar-update > span, .sidebar-update strong, .sidebar-update small { display: block; min-width: 0; }
+.sidebar-update strong { font-size: 12px; }
+.sidebar-update small { overflow: hidden; margin-top: 3px; color: #94aaa5; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-update.has-update { border-color: #96762d; color: #ffe5a3; background: #463d25; }
+.sidebar-update.has-update small { color: #dcc786; }
+.sidebar-update.checking > .el-icon { animation: update-spin .9s linear infinite; }
+@keyframes update-spin { to { transform: rotate(360deg); } }
 .sidebar-status { display: flex; align-items: center; gap: 8px; padding: 14px 12px 0; border-top: 1px solid #31534b; color: #94aaa5; font-size: 12px; }
 .sidebar-status span { width: 7px; height: 7px; border-radius: 50%; background: #62bf88; }
 .app-main { min-width: 0; flex: 1; height: 100%; overflow: auto; }
@@ -258,9 +268,9 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
   .message-row.user .message-body { max-width: 86%; padding: 10px 13px; border-radius: 8px; background: #f0f3f2; }
   .message-row.user .message-body p { margin: 0; line-height: 1.6; }
   .composer { width: calc(100% - 20px); margin-bottom: 10px; box-shadow: 0 4px 16px rgba(24, 40, 36, .08); }
-  .attachment-list { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 7px; scrollbar-width: none; }
-  .attachment-list::-webkit-scrollbar { display: none; }
-  .attachment-list .attachment-chip { min-width: min(240px, 72vw); max-width: min(240px, 72vw); }
+  .attachment-list { display: grid; grid-template-columns: minmax(0, 1fr); max-height: 148px; overflow-x: hidden; overflow-y: auto; padding-bottom: 7px; }
+  .attachment-list .attachment-chip { width: 100%; max-width: none; min-height: 34px; padding: 6px 8px; }
+  .attachment-list button { width: 26px; height: 26px; flex-basis: 26px; }
   .composer-tools { display: block; }
   .composer-actions { display: grid; grid-template-columns: 32px 32px minmax(0, 1fr); width: 100%; gap: 4px; }
   .composer-effort { width: 100%; min-width: 0; }

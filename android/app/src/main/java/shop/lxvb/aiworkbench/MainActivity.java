@@ -57,9 +57,12 @@ public final class MainActivity extends Activity {
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
     private AppUpdate pendingUpdate;
     private AppUpdate availableUpdate;
+    private AppUpdate latestRelease;
     private boolean checkingForUpdate;
+    private boolean manualUpdateCheck;
     private long lastUpdateCheckAt;
     private String promptedVersion = "";
+    private String updateStatus = "idle";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -230,13 +233,28 @@ public final class MainActivity extends Activity {
     }
 
     private void checkForUpdate() {
-        if (checkingForUpdate || getSharedPreferences(UPDATE_PREFERENCES, MODE_PRIVATE).getLong("update_download_id", -1) >= 0) {
+        checkForUpdate(false);
+    }
+
+    private void checkForUpdate(boolean userInitiated) {
+        if (getSharedPreferences(UPDATE_PREFERENCES, MODE_PRIVATE).getLong("update_download_id", -1) >= 0) {
+            updateStatus = "downloading";
+            notifyWebUpdateStatus();
             return;
         }
+        if (checkingForUpdate) {
+            manualUpdateCheck |= userInitiated;
+            notifyWebUpdateStatus();
+            return;
+        }
+        manualUpdateCheck = userInitiated;
         checkingForUpdate = true;
+        updateStatus = "checking";
         lastUpdateCheckAt = System.currentTimeMillis();
+        notifyWebUpdateStatus();
         networkExecutor.execute(() -> {
             AppUpdate update = null;
+            boolean success = false;
             try {
                 URL endpoint = new URL(BuildConfig.APP_CENTER_URL + "/api/apps/ai-workbench/latest");
                 HttpURLConnection connection = (HttpURLConnection) endpoint.openConnection();
@@ -250,21 +268,37 @@ public final class MainActivity extends Activity {
                                 .optJSONObject("release");
                         if (release != null) update = AppUpdate.from(release);
                     }
+                    success = update != null && update.isValid();
                 }
                 connection.disconnect();
             } catch (Exception ignored) {
                 // Version checks are best-effort and must never block the workbench.
             }
             AppUpdate result = update;
+            boolean checked = success;
             runOnUiThread(() -> {
+                boolean requestedByUser = manualUpdateCheck;
+                manualUpdateCheck = false;
                 checkingForUpdate = false;
-                if (result != null && result.isValid() && AppUpdate.isNewer(result.version, BuildConfig.VERSION_NAME)) {
+                if (!checked) {
+                    updateStatus = "error";
+                    notifyWebUpdateStatus();
+                    return;
+                }
+                latestRelease = result;
+                if (AppUpdate.isNewer(result.version, BuildConfig.VERSION_NAME)) {
                     availableUpdate = result;
+                    updateStatus = "available";
+                    notifyWebUpdateStatus();
                     notifyWebUpdate();
-                    if (!result.version.equals(promptedVersion)) {
+                    if (requestedByUser || !result.version.equals(promptedVersion)) {
                         promptedVersion = result.version;
                         showUpdatePrompt(result);
                     }
+                } else {
+                    availableUpdate = null;
+                    updateStatus = "current";
+                    notifyWebUpdateStatus();
                 }
             });
         });
@@ -304,6 +338,23 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void notifyWebUpdateStatus() {
+        if (webView == null) return;
+        try {
+            AppUpdate release = availableUpdate != null ? availableUpdate : latestRelease;
+            JSONObject detail = new JSONObject()
+                    .put("status", updateStatus)
+                    .put("currentVersion", BuildConfig.VERSION_NAME);
+            if (release != null) {
+                detail.put("latestVersion", release.version).put("size", release.size);
+            }
+            webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('ai-workbench-app-update-status',{detail:"
+                    + detail + "}));", null);
+        } catch (Exception ignored) {
+            // Version state is also retained natively for the next page-ready callback.
+        }
+    }
+
     private void downloadPendingUpdate() {
         AppUpdate update = pendingUpdate;
         if (update == null) return;
@@ -331,6 +382,8 @@ public final class MainActivity extends Activity {
         try {
             long id = ((DownloadManager) getSystemService(DOWNLOAD_SERVICE)).enqueue(request);
             getSharedPreferences(UPDATE_PREFERENCES, MODE_PRIVATE).edit().putLong("update_download_id", id).apply();
+            updateStatus = "downloading";
+            notifyWebUpdateStatus();
             Toast.makeText(this, R.string.update_started, Toast.LENGTH_LONG).show();
         } catch (RuntimeException error) {
             Toast.makeText(this, R.string.download_failed, Toast.LENGTH_LONG).show();
@@ -367,9 +420,14 @@ public final class MainActivity extends Activity {
     private final class WorkbenchNativeBridge {
         @JavascriptInterface
         public void checkForUpdate() {
+            runOnUiThread(() -> MainActivity.this.checkForUpdate(true));
+        }
+
+        @JavascriptInterface
+        public void getUpdateStatus() {
             runOnUiThread(() -> {
+                notifyWebUpdateStatus();
                 if (availableUpdate != null) notifyWebUpdate();
-                else MainActivity.this.checkForUpdate();
             });
         }
     }
@@ -381,7 +439,7 @@ public final class MainActivity extends Activity {
             String host = uri.getHost();
             if ("ai-workbench".equals(uri.getScheme()) && "update".equals(host)) {
                 if (availableUpdate != null) showUpdatePrompt(availableUpdate);
-                else checkForUpdate();
+                else checkForUpdate(true);
                 return true;
             }
             if ("https".equals(uri.getScheme()) && ("ai.lxvb.top".equals(host) || "people.lxvb.top".equals(host))) {
@@ -398,7 +456,10 @@ public final class MainActivity extends Activity {
         @Override
         public void onPageFinished(WebView view, String url) {
             super.onPageFinished(view, url);
-            if (url != null && url.startsWith(APP_URL)) notifyWebUpdate();
+            if (url != null && url.startsWith(APP_URL)) {
+                notifyWebUpdateStatus();
+                notifyWebUpdate();
+            }
         }
 
         @Override

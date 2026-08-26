@@ -69,7 +69,7 @@ test.beforeEach(async ({ page }, testInfo) => {
   })
 })
 
-test('attachments upload concurrently with independent progress', async ({ page }) => {
+test('attachments upload concurrently with independent progress', async ({ page }, testInfo) => {
   const uploadRequests: string[] = []
   page.on('request', (request) => {
     if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/attachments')) uploadRequests.push(request.url())
@@ -86,6 +86,12 @@ test('attachments upload concurrently with independent progress', async ({ page 
   await expect(page.getByText('third-plan.txt')).toBeVisible()
   await expect.poll(() => uploadRequests.length).toBe(3)
   await expect(page.locator('.attachment-chip.is-uploading')).toHaveCount(3)
+  if (testInfo.project.name === 'mobile') {
+    const rows = await page.locator('.attachment-chip').evaluateAll((items) => items.map((item) => item.getBoundingClientRect().toJSON()))
+    expect(rows[1].y).toBeGreaterThanOrEqual(rows[0].y + rows[0].height)
+    expect(rows[2].y).toBeGreaterThanOrEqual(rows[1].y + rows[1].height)
+    await page.screenshot({ path: '../.runtime/screenshots/attachment-upload-mobile.png', fullPage: true })
+  }
   await expect(page.locator('.attachment-chip.is-ready')).toHaveCount(3, { timeout: 3_000 })
   await expect(page.getByRole('button', { name: '发送消息' })).toBeEnabled()
 })
@@ -97,6 +103,27 @@ test('native update event exposes the in-app update action', async ({ page }) =>
   const update = page.getByRole('link', { name: '下载并更新新版本' })
   await expect(update).toBeVisible()
   await expect(update).toHaveAttribute('href', 'ai-workbench://update?version=1.1.5')
+})
+
+test('native version check is always visible at the bottom of the menu', async ({ page }, testInfo) => {
+  await page.goto('/chat/cnv_demo')
+  await expect(page.getByRole('heading', { level: 1, name: '对话' })).toBeVisible()
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('ai-workbench-app-update-status', { detail: { status: 'current', currentVersion: '1.1.6', latestVersion: '1.1.6' } })))
+  await page.evaluate(() => {
+    window.AIWorkbenchNative = {
+      checkForUpdate: () => sessionStorage.setItem('native_update_checks', String(Number(sessionStorage.getItem('native_update_checks') || 0) + 1)),
+    }
+  })
+  if (testInfo.project.name === 'mobile') await page.getByRole('button', { name: '打开功能导航' }).click()
+  const update = page.getByRole('button', { name: /检查更新 已是最新版 · v1\.1\.6/ })
+  await expect(update).toBeVisible()
+  const navigation = page.locator('.nav-menu:visible')
+  const navigationBox = await navigation.boundingBox()
+  const updateBox = await update.boundingBox()
+  expect(navigationBox && updateBox && updateBox.y >= navigationBox.y + navigationBox.height).toBe(true)
+  if (testInfo.project.name === 'mobile') await page.screenshot({ path: '../.runtime/screenshots/version-menu-mobile.png', fullPage: true })
+  await update.click()
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('native_update_checks'))).toBe('1')
 })
 
 test('long model generation completes through background polling', async ({ page }) => {

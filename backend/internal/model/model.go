@@ -36,10 +36,13 @@ type Prompt struct {
 	Description string    `gorm:"size:300" json:"description"`
 	Category    string    `gorm:"size:60;index" json:"category"`
 	Content     string    `gorm:"type:text;not null" json:"content"`
+	Shared      bool      `gorm:"not null;default:false;index" json:"shared"`
 	Favorite    bool      `gorm:"not null;default:false" json:"favorite"`
 	UseCount    int64     `gorm:"not null;default:0" json:"useCount"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
+	CanEdit     bool      `gorm:"-" json:"canEdit"`
+	CanDelete   bool      `gorm:"-" json:"canDelete"`
 }
 
 type Conversation struct {

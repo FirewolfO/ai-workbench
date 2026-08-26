@@ -10,15 +10,15 @@
 - 支持 OpenAI Responses API 原生联网搜索，模型可按问题主动检索实时信息并在回答中保留来源链接
 - 图片及文件附件随单次消息发送，模型调用读取后即从服务器删除原文件
 - Markdown 回答预览、回答复制、响应延迟及 Token 用量展示
-- 个人提示词库，支持分类、搜索、收藏、使用次数及一键带入对话
+- 个人与共享提示词库，支持分类、搜索、收藏、编辑、删除、使用次数及一键带入对话
 - 前沿项目发现，按 AI 项目、Skill 与插件检索 GitHub，并综合社区规模、活跃度与成熟度排序
 - 普通用户查看个人用量，管理员查看全部用户汇总用量
-- Web 端支持内部账号、People OAuth 与 Permission 三种身份入口，Android 端只允许 People 登录；对话和提示词按身份 ID 隔离
+- Web 与 Android 端均可免登录使用，也支持内部账号、People OAuth 与 Permission 身份；对话和提示词按登录身份或匿名设备 ID 隔离
 - Android 15/16 原生客户端
 
 ## 登录与集成
 
-独立工作台支持内部账号和 People OAuth 2.0 授权码模式登录。浏览器只把授权码交给 AI Workbench 后端，OAuth Client Secret 不进入前端。
+独立工作台支持免登录使用、内部账号和 People OAuth 2.0 授权码模式登录。匿名模式会在设备本地保存随机设备 ID，后端只使用其哈希归属会话、提示词和用量；清除站点数据会同时清除该匿名身份。浏览器只把授权码交给 AI Workbench 后端，OAuth Client Secret 不进入前端。登录会话保存在设备本地并长期有效，主动退出后才会清除。
 
 SQLite 首次初始化会创建内部管理员 `admin`，初始密码为 `admin123!`。管理员可在“用户管理”中添加、停用、删除普通用户或重设密码；新增用户未指定密码时默认使用 `用户名@123`。生产部署后应立即修改管理员密码。普通用户看不到用户管理和模型连接页面，也不能调用对应管理接口。
 
@@ -87,7 +87,7 @@ APK 统一发布到 `https://apps.lxvb.top`，AI Workbench 不再维护自己的
 
 ## Android 客户端
 
-`android/` 是固定访问 `https://ai.lxvb.top` 的原生 WebView 客户端，移动界面采用全宽对话区、侧滑会话列表，并保留模型和推理档位选择。客户端只显示 People 登录，包含系统文件选择、返回导航、下载、Safe Browsing，以及通过统一应用中心检查、下载和安装新版本。它使用 `compileSdk 36`、`targetSdk 36`、`minSdk 35`，覆盖 Android 15 和 Android 16。
+`android/` 是固定访问 `https://ai.lxvb.top` 的原生 WebView 客户端，移动界面采用全宽对话区、侧滑会话列表，并保留模型和推理档位选择。客户端支持匿名使用和 People 登录，包含系统文件选择、返回导航、下载、Safe Browsing，以及通过统一应用中心检查、下载和安装新版本。它使用 `compileSdk 36`、`targetSdk 36`、`minSdk 35`，覆盖 Android 15 和 Android 16。
 
 ```bash
 cd android
@@ -98,11 +98,9 @@ cd android
 
 ## 每日 AI 情报
 
-后端每天按 `AI_WORKBENCH_NEWS_TIMEZONE`（默认 `Asia/Shanghai`）在 `AI_WORKBENCH_NEWS_REFRESH_HOUR`（默认上午 10 点）自动拉取一次最近 `AI_WORKBENCH_NEWS_LOOKBACK_HOURS`（默认 24 小时）内发布的新热点；当天失败时每 15 分钟重试，服务在 10 点后启动且当天尚未成功时会立即补拉。页面仍支持手动同步。人物动态继续按 `AI_WORKBENCH_CONTENT_REFRESH_HOURS`（默认 24 小时）检查更新。
+后端每天按 `AI_WORKBENCH_NEWS_TIMEZONE`（默认 `Asia/Shanghai`）在 `AI_WORKBENCH_NEWS_REFRESH_HOUR`（默认上午 10 点）自动拉取一次最近 `AI_WORKBENCH_NEWS_LOOKBACK_HOURS`（默认 24 小时）内发布的新热点；当天失败时每 15 分钟重试，服务在 10 点后启动且当天尚未成功时会立即补拉。页面仍支持手动同步。
 
 - AI 热点使用各机构公开订阅源：[OpenAI News RSS](https://openai.com/news/rss.xml)、[Google AI RSS](https://blog.google/technology/ai/rss/)、[Hugging Face Blog Feed](https://huggingface.co/blog/feed.xml) 与 [arXiv cs.AI RSS](https://export.arxiv.org/rss/cs.AI)。文章按原文 URL 去重，收藏按 People 用户隔离；页面会使用当前用户启用的模型批量生成简短中文概要并缓存，未配置模型时保留来源原始摘要。
-- 大佬动态默认关注 Codex 产品负责人 Tibor Blaho（`@btibor91`），并允许每位用户维护自己的 X 关注列表。接入遵循 X API v2 的 [User Lookup](https://docs.x.com/x-api/users/lookup/introduction) 与 [Get Posts](https://docs.x.com/x-api/users/get-posts) 接口。
-- X Bearer Token 仅通过后端环境变量 `AI_WORKBENCH_X_BEARER_TOKEN` 提供，不会返回浏览器或写入日志。未配置时 AI 热点仍可正常工作，人物动态页面会显示配置状态。
 
 ## 前沿项目
 

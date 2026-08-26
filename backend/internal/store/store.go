@@ -44,6 +44,10 @@ func Open(dsn string) (*Store, error) {
 	); err != nil {
 		return nil, err
 	}
+	now := time.Now().UTC()
+	if err := db.Model(&model.Session{}).Where("expires_at > ?", now).Update("expires_at", now.AddDate(10, 0, 0)).Error; err != nil {
+		return nil, err
+	}
 	var adminCount int64
 	if err := db.Model(&model.InternalUser{}).Where("username = ?", "admin").Count(&adminCount).Error; err != nil {
 		return nil, err

@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -55,40 +57,34 @@ func New(address string, allowedOrigins []string, auth authenticator, service *w
 	mux.Handle("POST /api/v1/admin/users", server.requireAuth(http.HandlerFunc(server.createUser)))
 	mux.Handle("PATCH /api/v1/admin/users/{username}", server.requireAuth(http.HandlerFunc(server.updateUser)))
 	mux.Handle("DELETE /api/v1/admin/users/{username}", server.requireAuth(http.HandlerFunc(server.deleteUser)))
-	mux.Handle("GET /api/v1/dashboard", server.requireAuth(http.HandlerFunc(server.dashboard)))
-	mux.Handle("GET /api/v1/models", server.requireAuth(http.HandlerFunc(server.models)))
+	mux.Handle("GET /api/v1/dashboard", server.userAccess(http.HandlerFunc(server.dashboard)))
+	mux.Handle("GET /api/v1/models", server.userAccess(http.HandlerFunc(server.models)))
 	mux.Handle("GET /api/v1/providers", server.requireAuth(http.HandlerFunc(server.providers)))
 	mux.Handle("POST /api/v1/providers", server.requireAuth(http.HandlerFunc(server.createProvider)))
 	mux.Handle("PUT /api/v1/providers/{id}", server.requireAuth(http.HandlerFunc(server.updateProvider)))
 	mux.Handle("DELETE /api/v1/providers/{id}", server.requireAuth(http.HandlerFunc(server.deleteProvider)))
 	mux.Handle("POST /api/v1/providers/{id}/test", server.requireAuth(http.HandlerFunc(server.testProvider)))
-	mux.Handle("GET /api/v1/prompts", server.requireAuth(http.HandlerFunc(server.prompts)))
-	mux.Handle("POST /api/v1/prompts", server.requireAuth(http.HandlerFunc(server.createPrompt)))
-	mux.Handle("PUT /api/v1/prompts/{id}", server.requireAuth(http.HandlerFunc(server.updatePrompt)))
-	mux.Handle("DELETE /api/v1/prompts/{id}", server.requireAuth(http.HandlerFunc(server.deletePrompt)))
-	mux.Handle("POST /api/v1/prompts/{id}/use", server.requireAuth(http.HandlerFunc(server.usePrompt)))
-	mux.Handle("GET /api/v1/conversations", server.requireAuth(http.HandlerFunc(server.conversations)))
-	mux.Handle("POST /api/v1/conversations", server.requireAuth(http.HandlerFunc(server.createConversation)))
-	mux.Handle("GET /api/v1/conversations/{id}", server.requireAuth(http.HandlerFunc(server.conversation)))
-	mux.Handle("PATCH /api/v1/conversations/{id}", server.requireAuth(http.HandlerFunc(server.updateConversation)))
-	mux.Handle("DELETE /api/v1/conversations/{id}", server.requireAuth(http.HandlerFunc(server.deleteConversation)))
-	mux.Handle("POST /api/v1/conversations/{id}/messages", server.requireAuth(http.HandlerFunc(server.sendMessage)))
-	mux.Handle("POST /api/v1/conversations/{id}/messages/async", server.requireAuth(http.HandlerFunc(server.queueMessage)))
-	mux.Handle("POST /api/v1/conversations/{id}/stop", server.requireAuth(http.HandlerFunc(server.stopGeneration)))
-	mux.Handle("POST /api/v1/attachments", server.requireAuth(http.HandlerFunc(server.createAttachment)))
-	mux.Handle("DELETE /api/v1/attachments/{id}", server.requireAuth(http.HandlerFunc(server.deleteAttachment)))
-	mux.Handle("GET /api/v1/content/status", server.requireAuth(http.HandlerFunc(server.contentStatus)))
-	mux.Handle("GET /api/v1/news", server.requireAuth(http.HandlerFunc(server.news)))
-	mux.Handle("POST /api/v1/news/refresh", server.requireAuth(http.HandlerFunc(server.refreshNews)))
-	mux.Handle("POST /api/v1/news/summaries", server.requireAuth(http.HandlerFunc(server.summarizeNews)))
-	mux.Handle("PUT /api/v1/news/{id}/favorite", server.requireAuth(http.HandlerFunc(server.favoriteNews)))
-	mux.Handle("GET /api/v1/people", server.requireAuth(http.HandlerFunc(server.people)))
-	mux.Handle("POST /api/v1/people", server.requireAuth(http.HandlerFunc(server.addPerson)))
-	mux.Handle("DELETE /api/v1/people/{id}", server.requireAuth(http.HandlerFunc(server.deletePerson)))
-	mux.Handle("POST /api/v1/people/refresh", server.requireAuth(http.HandlerFunc(server.refreshPeople)))
-	mux.Handle("GET /api/v1/people/posts", server.requireAuth(http.HandlerFunc(server.socialPosts)))
-	mux.Handle("PUT /api/v1/people/posts/{id}/favorite", server.requireAuth(http.HandlerFunc(server.favoritePost)))
-	mux.Handle("GET /api/v1/frontier", server.requireAuth(http.HandlerFunc(server.frontierProjects)))
+	mux.Handle("GET /api/v1/prompts", server.userAccess(http.HandlerFunc(server.prompts)))
+	mux.Handle("POST /api/v1/prompts", server.userAccess(http.HandlerFunc(server.createPrompt)))
+	mux.Handle("PUT /api/v1/prompts/{id}", server.userAccess(http.HandlerFunc(server.updatePrompt)))
+	mux.Handle("DELETE /api/v1/prompts/{id}", server.userAccess(http.HandlerFunc(server.deletePrompt)))
+	mux.Handle("POST /api/v1/prompts/{id}/use", server.userAccess(http.HandlerFunc(server.usePrompt)))
+	mux.Handle("GET /api/v1/conversations", server.userAccess(http.HandlerFunc(server.conversations)))
+	mux.Handle("POST /api/v1/conversations", server.userAccess(http.HandlerFunc(server.createConversation)))
+	mux.Handle("GET /api/v1/conversations/{id}", server.userAccess(http.HandlerFunc(server.conversation)))
+	mux.Handle("PATCH /api/v1/conversations/{id}", server.userAccess(http.HandlerFunc(server.updateConversation)))
+	mux.Handle("DELETE /api/v1/conversations/{id}", server.userAccess(http.HandlerFunc(server.deleteConversation)))
+	mux.Handle("POST /api/v1/conversations/{id}/messages", server.userAccess(http.HandlerFunc(server.sendMessage)))
+	mux.Handle("POST /api/v1/conversations/{id}/messages/async", server.userAccess(http.HandlerFunc(server.queueMessage)))
+	mux.Handle("POST /api/v1/conversations/{id}/stop", server.userAccess(http.HandlerFunc(server.stopGeneration)))
+	mux.Handle("POST /api/v1/attachments", server.userAccess(http.HandlerFunc(server.createAttachment)))
+	mux.Handle("DELETE /api/v1/attachments/{id}", server.userAccess(http.HandlerFunc(server.deleteAttachment)))
+	mux.Handle("GET /api/v1/content/status", server.userAccess(http.HandlerFunc(server.contentStatus)))
+	mux.Handle("GET /api/v1/news", server.userAccess(http.HandlerFunc(server.news)))
+	mux.Handle("POST /api/v1/news/refresh", server.userAccess(http.HandlerFunc(server.refreshNews)))
+	mux.Handle("POST /api/v1/news/summaries", server.userAccess(http.HandlerFunc(server.summarizeNews)))
+	mux.Handle("PUT /api/v1/news/{id}/favorite", server.userAccess(http.HandlerFunc(server.favoriteNews)))
+	mux.Handle("GET /api/v1/frontier", server.userAccess(http.HandlerFunc(server.frontierProjects)))
 	return &http.Server{Addr: address, Handler: server.middleware(mux), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 120 * time.Second}
 }
 
@@ -101,7 +97,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		if origin != "" && s.allowedOrigins[origin] {
 			writer.Header().Set("Access-Control-Allow-Origin", origin)
 			writer.Header().Set("Vary", "Origin")
-			writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-AI-Workbench-Device-ID")
 			writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		}
 		if request.Method == http.MethodOptions {
@@ -126,6 +122,42 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(writer, request.WithContext(context.WithValue(request.Context(), actorContextKey{}, *actor)))
 	})
+}
+
+func (s *Server) userAccess(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.TrimSpace(request.Header.Get("Authorization")) != "" {
+			actor, err := s.auth.Authenticate(request.Context(), bearer(request.Header.Get("Authorization")))
+			if err != nil {
+				fail(writer, http.StatusUnauthorized, "UNAUTHORIZED", "登录已过期，请重新登录")
+				return
+			}
+			next.ServeHTTP(writer, request.WithContext(context.WithValue(request.Context(), actorContextKey{}, *actor)))
+			return
+		}
+		actor, ok := anonymousActor(request.Header.Get("X-AI-Workbench-Device-ID"))
+		if !ok {
+			fail(writer, http.StatusUnauthorized, "DEVICE_ID_REQUIRED", "缺少设备标识，请刷新后重试")
+			return
+		}
+		next.ServeHTTP(writer, request.WithContext(context.WithValue(request.Context(), actorContextKey{}, actor)))
+	})
+}
+
+func anonymousActor(deviceID string) (identity.Actor, bool) {
+	deviceID = strings.TrimSpace(deviceID)
+	if len(deviceID) < 20 || len(deviceID) > 128 {
+		return identity.Actor{}, false
+	}
+	for _, character := range deviceID {
+		if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || strings.ContainsRune("._~-", character)) {
+			return identity.Actor{}, false
+		}
+	}
+	digest := sha256.Sum256([]byte(deviceID))
+	id := "anonymous:" + hex.EncodeToString(digest[:])
+	return identity.Actor{ID: id, Username: id, DisplayName: "访客", Source: "anonymous", Role: identity.RoleUser}, true
 }
 
 func (s *Server) health(writer http.ResponseWriter, _ *http.Request) {
@@ -413,51 +445,6 @@ func (s *Server) favoriteNews(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	err := s.content.FavoriteNews(actor(request), request.PathValue("id"), input.Favorite)
-	respond(writer, map[string]bool{"favorite": input.Favorite}, err, http.StatusOK)
-}
-
-func (s *Server) people(writer http.ResponseWriter, request *http.Request) {
-	result, err := s.content.People(actor(request))
-	respond(writer, result, err, http.StatusOK)
-}
-
-func (s *Server) addPerson(writer http.ResponseWriter, request *http.Request) {
-	var input struct {
-		Handle      string `json:"handle"`
-		DisplayName string `json:"displayName"`
-	}
-	if !decode(writer, request, &input) {
-		return
-	}
-	result, err := s.content.AddPerson(actor(request), input.Handle, input.DisplayName)
-	respond(writer, result, err, http.StatusCreated)
-}
-
-func (s *Server) deletePerson(writer http.ResponseWriter, request *http.Request) {
-	err := s.content.DeletePerson(actor(request), request.PathValue("id"))
-	respond(writer, map[string]bool{"deleted": err == nil}, err, http.StatusOK)
-}
-
-func (s *Server) refreshPeople(writer http.ResponseWriter, request *http.Request) {
-	result, err := s.content.RefreshPeople(request.Context(), actor(request))
-	respond(writer, result, err, http.StatusOK)
-}
-
-func (s *Server) socialPosts(writer http.ResponseWriter, request *http.Request) {
-	result, err := s.content.Posts(
-		actor(request), request.URL.Query().Get("personId"), request.URL.Query().Get("search"), request.URL.Query().Get("favorite") == "true",
-	)
-	respond(writer, result, err, http.StatusOK)
-}
-
-func (s *Server) favoritePost(writer http.ResponseWriter, request *http.Request) {
-	var input struct {
-		Favorite bool `json:"favorite"`
-	}
-	if !decode(writer, request, &input) {
-		return
-	}
-	err := s.content.FavoritePost(actor(request), request.PathValue("id"), input.Favorite)
 	respond(writer, map[string]bool{"favorite": input.Favorite}, err, http.StatusOK)
 }
 

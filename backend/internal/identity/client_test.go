@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"ai-workbench/internal/store"
 )
@@ -55,6 +56,9 @@ func TestInternalAdminAndUserLifecycle(t *testing.T) {
 	adminSession, err := client.InternalLogin(context.Background(), "admin", "admin123!")
 	if err != nil || !adminSession.User.IsAdmin() || adminSession.User.Source != "internal" {
 		t.Fatalf("InternalLogin(admin) = %#v, %v", adminSession, err)
+	}
+	if adminSession.ExpiresAt.Before(time.Now().AddDate(9, 11, 0)) {
+		t.Fatalf("session should remain valid until logout: %v", adminSession.ExpiresAt)
 	}
 	created, err := client.CreateUser(adminSession.User, UserInput{Username: "alice", DisplayName: "Alice"})
 	if err != nil || created.InitialPassword != "alice@123" || created.User.Role != RoleUser {

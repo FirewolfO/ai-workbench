@@ -162,7 +162,7 @@ func (c *Client) createSession(actor Actor) (*SessionResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	expiresAt := time.Now().UTC().Add(12 * time.Hour)
+	expiresAt := time.Now().UTC().AddDate(10, 0, 0)
 	if actor.Role == "" {
 		actor.Role = RoleUser
 	}

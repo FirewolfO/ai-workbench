@@ -1,21 +1,55 @@
 import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios'
-import type { Attachment, AvailableModel, ContentStatus, Conversation, CreatedUser, Dashboard, FrontierCategory, FrontierResult, InternalUser, Message, NewsResult, NewsSummaryResult, PeopleResult, Prompt, PromptInput, Provider, ProviderInput, ReasoningEffort, Session, SocialPost, SyncState, TrackedPerson, User } from './types'
+import type { Attachment, AvailableModel, ContentStatus, Conversation, CreatedUser, Dashboard, FrontierCategory, FrontierResult, InternalUser, Message, NewsResult, NewsSummaryResult, Prompt, PromptInput, Provider, ProviderInput, ReasoningEffort, Session, SyncState, User } from './types'
 
 interface Envelope<T> { code: string; message: string; data: T }
 interface RetryConfig extends InternalAxiosRequestConfig { _retry?: boolean }
 
 const accessTokenKey = 'ai_workbench_access_token'
 const sessionKey = 'ai_workbench_session'
+const deviceIDKey = 'ai_workbench_device_id'
 const api = axios.create({ baseURL: import.meta.env.VITE_AI_WORKBENCH_API_BASE_URL || '/api/v1', timeout: 120_000 })
 
+function read(storage: Storage, key: string) {
+  try { return storage.getItem(key) || '' } catch { return '' }
+}
+function write(storage: Storage, key: string, value: string) {
+  try { storage.setItem(key, value) } catch { /* Storage can be disabled by browser policy. */ }
+}
+function remove(storage: Storage, key: string) {
+  try { storage.removeItem(key) } catch { /* Storage can be disabled by browser policy. */ }
+}
+function migrateSessionStorage() {
+  if (!read(localStorage, accessTokenKey)) {
+    const token = read(sessionStorage, accessTokenKey)
+    const session = read(sessionStorage, sessionKey)
+    if (token) write(localStorage, accessTokenKey, token)
+    if (session) write(localStorage, sessionKey, session)
+  }
+  remove(sessionStorage, accessTokenKey)
+  remove(sessionStorage, sessionKey)
+}
+function accessToken() { return read(localStorage, accessTokenKey) }
+function deviceID() {
+  const saved = read(localStorage, deviceIDKey)
+  if (saved) return saved
+  const value = typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : Array.from(crypto.getRandomValues(new Uint8Array(24)), byte => byte.toString(16).padStart(2, '0')).join('')
+  write(localStorage, deviceIDKey, value)
+  return value
+}
+
+migrateSessionStorage()
+
 api.interceptors.request.use((config) => {
-  const token = sessionStorage.getItem(accessTokenKey)
+  const token = accessToken()
   if (token) config.headers.Authorization = `Bearer ${token}`
+  config.headers['X-AI-Workbench-Device-ID'] = deviceID()
   return config
 })
 api.interceptors.response.use((response) => response, (error: AxiosError<Envelope<unknown>>) => {
   const original = error.config as RetryConfig | undefined
-  if (error.response?.status === 401 && original && !original._retry && !original.url?.includes('/auth/')) {
+  if (error.response?.status === 401 && accessToken() && original && !original._retry && !original.url?.includes('/auth/')) {
     clearSession()
     window.location.assign(`/login?redirect=${encodeURIComponent(location.pathname + location.search)}`)
   }
@@ -26,14 +60,19 @@ const unwrap = async <T>(promise: Promise<{ data: Envelope<T> }>) => (await prom
 export const apiMessage = (error: unknown, fallback = '请求失败') => axios.isAxiosError<Envelope<unknown>>(error) ? error.response?.data?.message || fallback : error instanceof Error ? error.message : fallback
 
 export function saveSession(session: Session) {
-  sessionStorage.setItem(accessTokenKey, session.accessToken)
-  sessionStorage.setItem(sessionKey, JSON.stringify({ user: session.user, expiresAt: session.expiresAt }))
+  write(localStorage, accessTokenKey, session.accessToken)
+  write(localStorage, sessionKey, JSON.stringify({ user: session.user, expiresAt: session.expiresAt }))
 }
 export function loadSession(): { user: User; expiresAt: string } | null {
-  try { return JSON.parse(sessionStorage.getItem(sessionKey) || 'null') }
+  try { return JSON.parse(read(localStorage, sessionKey) || 'null') }
   catch { clearSession(); return null }
 }
-export function clearSession() { sessionStorage.removeItem(accessTokenKey); sessionStorage.removeItem(sessionKey) }
+export function clearSession() {
+  remove(localStorage, accessTokenKey)
+  remove(localStorage, sessionKey)
+  remove(sessionStorage, accessTokenKey)
+  remove(sessionStorage, sessionKey)
+}
 
 export const workbenchApi = {
   oauthURL: (redirectUri: string) => unwrap<{ url: string }>(api.get('/auth/oauth/url', { params: { redirect_uri: redirectUri } })),
@@ -75,11 +114,5 @@ export const workbenchApi = {
   refreshNews: () => unwrap<SyncState>(api.post('/news/refresh')),
   summarizeNews: (articleIds: string[]) => unwrap<NewsSummaryResult>(api.post('/news/summaries', { articleIds })),
   favoriteNews: (id: string, favorite: boolean) => unwrap<{ favorite: boolean }>(api.put(`/news/${id}/favorite`, { favorite })),
-  people: () => unwrap<PeopleResult>(api.get('/people')),
-  addPerson: (handle: string, displayName: string) => unwrap<TrackedPerson>(api.post('/people', { handle, displayName })),
-  deletePerson: (id: string) => unwrap<{ deleted: boolean }>(api.delete(`/people/${id}`)),
-  refreshPeople: () => unwrap<SyncState>(api.post('/people/refresh')),
-  socialPosts: (personId = '', search = '', favorite = false) => unwrap<SocialPost[]>(api.get('/people/posts', { params: { personId, search, favorite } })),
-  favoritePost: (id: string, favorite: boolean) => unwrap<{ favorite: boolean }>(api.put(`/people/posts/${id}/favorite`, { favorite })),
   frontier: (params: { search?: string; category: FrontierCategory; language?: string; period: string; sort: string }) => unwrap<FrontierResult>(api.get('/frontier', { params })),
 }

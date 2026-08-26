@@ -36,8 +36,11 @@ export interface Prompt {
   description: string
   category: string
   content: string
+  shared: boolean
   favorite: boolean
   useCount: number
+  canEdit: boolean
+  canDelete: boolean
   createdAt: string
   updatedAt: string
 }
@@ -82,7 +85,7 @@ export interface Dashboard {
 
 export type ProviderProtocol = 'chat_completions' | 'responses'
 export interface ProviderInput { name: string; baseUrl: string; defaultModel: string; protocol: ProviderProtocol; webSearchEnabled: boolean; apiKey: string; enabled?: boolean }
-export interface PromptInput { title: string; description: string; category: string; content: string; favorite?: boolean }
+export interface PromptInput { title: string; description: string; category: string; content: string; shared?: boolean; favorite?: boolean }
 export type ReasoningEffort = 'fast' | 'medium' | 'high' | 'xhigh'
 export interface AvailableModel { id: string; name: string; defaultModel: string; models: string[]; webSearchEnabled: boolean; modelsUpdatedAt?: string }
 export interface Attachment { id: string; name: string; contentType: string; size: number; expiresAt: string }
@@ -102,9 +105,6 @@ export interface NewsArticle {
 export interface ContentSource { code: string; name: string }
 export interface NewsResult { items: NewsArticle[]; sources: ContentSource[]; lastSuccessAt?: string; lastError: string }
 export interface NewsSummaryResult { generated: number; summaries: Record<string, string> }
-export interface TrackedPerson { id: string; platform: 'x'; handle: string; displayName: string; profileImageUrl: string; enabled: boolean; lastFetchedAt?: string; lastError: string }
-export interface PeopleResult { people: TrackedPerson[]; xConfigured: boolean; lastSuccessAt?: string; lastError: string }
-export interface SocialPost { id: string; personId: string; handle: string; displayName: string; content: string; url: string; publishedAt: string; likeCount: number; repostCount: number; replyCount: number; favorite: boolean }
 export interface SyncState { key: string; lastAttemptAt?: string; lastSuccessAt?: string; lastError: string; itemsFetched: number }
 export interface ContentStatus { xConfigured: boolean; refreshHours: number; newsLastSuccessAt?: string; newsLastError: string; peopleLastSuccessAt?: string; peopleLastError: string }
 

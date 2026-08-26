@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChatLineRound, Close, Compass, Connection, DataAnalysis, Expand, MagicStick, Menu as MenuIcon, SwitchButton, TrendCharts, User, UserFilled } from '@element-plus/icons-vue'
+import { ChatLineRound, Close, Compass, Connection, DataAnalysis, MagicStick, Menu as MenuIcon, SwitchButton, TrendCharts, User } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
@@ -13,13 +13,12 @@ const items = computed(() => [
   { path: '/chat', label: '对话', icon: ChatLineRound },
   { path: '/news', label: 'AI 热点', icon: TrendCharts },
   { path: '/frontier', label: '前沿项目', icon: Compass },
-  { path: '/people', label: '大佬动态', icon: UserFilled },
   { path: '/prompts', label: '提示词', icon: MagicStick },
   ...(auth.isAdmin ? [{ path: '/providers', label: '模型连接', icon: Connection }, { path: '/users', label: '用户管理', icon: User }] : []),
   { path: '/dashboard', label: '用量概览', icon: DataAnalysis },
 ])
 
-async function logout() { await auth.logout(); await router.replace('/login') }
+async function logout() { await auth.logout(); await router.replace('/chat') }
 </script>
 
 <template>
@@ -29,7 +28,7 @@ async function logout() { await auth.logout(); await router.replace('/login') }
       <el-menu :default-active="route.path.startsWith('/chat') ? '/chat' : route.path" router class="nav-menu">
         <el-menu-item v-for="item in items" :key="item.path" :index="item.path"><el-icon><component :is="item.icon" /></el-icon><span>{{ item.label }}</span></el-menu-item>
       </el-menu>
-      <div class="sidebar-status"><span></span>{{ auth.user?.source === 'internal' ? '内部账号' : 'People SSO' }}</div>
+      <div class="sidebar-status"><span></span>{{ !auth.user ? '访客模式' : auth.user.source === 'internal' ? '内部账号' : 'People SSO' }}</div>
     </aside>
     <el-drawer v-model="drawerOpen" direction="ltr" :with-header="false" size="min(220px, 74vw)">
       <aside class="app-sidebar drawer-sidebar">
@@ -42,12 +41,13 @@ async function logout() { await auth.logout(); await router.replace('/login') }
     </el-drawer>
     <main class="app-main">
       <header class="topbar">
-        <el-button class="mobile-menu" text :icon="Expand" aria-label="打开导航" @click="drawerOpen = true" />
+        <el-button class="mobile-menu" text :icon="MenuIcon" aria-label="打开功能导航" @click="drawerOpen = true" />
         <h1>{{ pageTitle }}</h1>
-        <el-dropdown trigger="click">
-          <button class="identity-button" type="button"><span>{{ auth.user?.displayName?.slice(0, 1) || 'U' }}</span><strong>{{ auth.user?.displayName || auth.user?.username }}</strong><el-icon><MenuIcon /></el-icon></button>
+        <el-dropdown v-if="auth.authenticated" trigger="click">
+          <button class="identity-button" type="button"><span>{{ auth.user?.displayName?.slice(0, 1) || 'U' }}</span><strong>{{ auth.user?.displayName || auth.user?.username }}</strong></button>
           <template #dropdown><el-dropdown-menu><el-dropdown-item disabled>{{ auth.user?.username }}</el-dropdown-item><el-dropdown-item divided :icon="SwitchButton" @click="logout">退出登录</el-dropdown-item></el-dropdown-menu></template>
         </el-dropdown>
+        <el-button v-else text @click="router.push('/login')">登录</el-button>
       </header>
       <router-view />
     </main>

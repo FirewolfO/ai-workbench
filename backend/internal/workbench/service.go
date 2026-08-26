@@ -70,6 +70,7 @@ type PromptInput struct {
 	Description string `json:"description"`
 	Category    string `json:"category"`
 	Content     string `json:"content"`
+	Shared      *bool  `json:"shared,omitempty"`
 	Favorite    *bool  `json:"favorite,omitempty"`
 }
 
@@ -585,17 +586,25 @@ func (s *Service) providerKey(provider *model.Provider) (string, error) {
 }
 
 func (s *Service) Prompts(actor identity.Actor, search string) ([]model.Prompt, error) {
-	query := s.database.DB.Where("owner_id = ?", ownerID(actor))
+	query := s.database.DB.Where("(owner_id = ? OR shared = ?)", ownerID(actor), true)
 	if term := strings.TrimSpace(search); term != "" {
 		like := "%" + term + "%"
-		query = query.Where("title LIKE ? OR description LIKE ? OR content LIKE ?", like, like, like)
+		query = query.Where("(title LIKE ? OR description LIKE ? OR content LIKE ?)", like, like, like)
 	}
 	var prompts []model.Prompt
-	err := query.Order("favorite DESC, updated_at DESC").Find(&prompts).Error
-	return prompts, err
+	if err := query.Order("favorite DESC, shared DESC, updated_at DESC").Find(&prompts).Error; err != nil {
+		return nil, err
+	}
+	for index := range prompts {
+		decoratePrompt(actor, &prompts[index])
+	}
+	return prompts, nil
 }
 
 func (s *Service) CreatePrompt(actor identity.Actor, input PromptInput) (*model.Prompt, error) {
+	if input.Shared != nil && *input.Shared && !actor.IsAdmin() {
+		return nil, ErrForbidden
+	}
 	prompt, err := promptFromInput(ownerID(actor), input)
 	if err != nil {
 		return nil, err
@@ -604,15 +613,19 @@ func (s *Service) CreatePrompt(actor identity.Actor, input PromptInput) (*model.
 	if err := s.database.DB.Create(prompt).Error; err != nil {
 		return nil, err
 	}
+	decoratePrompt(actor, prompt)
 	return prompt, nil
 }
 
 func (s *Service) UpdatePrompt(actor identity.Actor, id string, input PromptInput) (*model.Prompt, error) {
-	current, err := s.prompt(actor, id)
+	current, err := s.ownedPrompt(actor, id)
 	if err != nil {
 		return nil, err
 	}
-	prompt, err := promptFromInput(ownerID(actor), input)
+	if input.Shared != nil && *input.Shared && !actor.IsAdmin() {
+		return nil, ErrForbidden
+	}
+	prompt, err := promptFromInput(current.OwnerID, input)
 	if err != nil {
 		return nil, err
 	}
@@ -620,14 +633,18 @@ func (s *Service) UpdatePrompt(actor identity.Actor, id string, input PromptInpu
 	if input.Favorite == nil {
 		prompt.Favorite = current.Favorite
 	}
+	if input.Shared == nil {
+		prompt.Shared = current.Shared
+	}
 	if err := s.database.DB.Save(prompt).Error; err != nil {
 		return nil, err
 	}
+	decoratePrompt(actor, prompt)
 	return prompt, nil
 }
 
 func (s *Service) UsePrompt(actor identity.Actor, id string) (*model.Prompt, error) {
-	prompt, err := s.prompt(actor, id)
+	prompt, err := s.visiblePrompt(actor, id)
 	if err != nil {
 		return nil, err
 	}
@@ -635,11 +652,12 @@ func (s *Service) UsePrompt(actor identity.Actor, id string) (*model.Prompt, err
 		return nil, err
 	}
 	prompt.UseCount++
+	decoratePrompt(actor, prompt)
 	return prompt, nil
 }
 
 func (s *Service) DeletePrompt(actor identity.Actor, id string) error {
-	prompt, err := s.prompt(actor, id)
+	prompt, err := s.ownedPrompt(actor, id)
 	if err != nil {
 		return err
 	}
@@ -652,13 +670,26 @@ func promptFromInput(owner string, input PromptInput) (*model.Prompt, error) {
 		return nil, ErrInvalid
 	}
 	prompt := &model.Prompt{OwnerID: owner, Title: input.Title, Description: strings.TrimSpace(input.Description), Category: strings.TrimSpace(input.Category), Content: input.Content}
+	if input.Shared != nil {
+		prompt.Shared = *input.Shared
+	}
 	if input.Favorite != nil {
 		prompt.Favorite = *input.Favorite
 	}
 	return prompt, nil
 }
 
-func (s *Service) prompt(actor identity.Actor, id string) (*model.Prompt, error) {
+func (s *Service) visiblePrompt(actor identity.Actor, id string) (*model.Prompt, error) {
+	var prompt model.Prompt
+	if err := s.database.DB.Where("id = ? AND (owner_id = ? OR shared = ?)", id, ownerID(actor), true).First(&prompt).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	return &prompt, nil
+}
+
+func (s *Service) ownedPrompt(actor identity.Actor, id string) (*model.Prompt, error) {
 	var prompt model.Prompt
 	if err := s.database.DB.Where("id = ? AND owner_id = ?", id, ownerID(actor)).First(&prompt).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrNotFound
@@ -666,6 +697,12 @@ func (s *Service) prompt(actor identity.Actor, id string) (*model.Prompt, error)
 		return nil, err
 	}
 	return &prompt, nil
+}
+
+func decoratePrompt(actor identity.Actor, prompt *model.Prompt) {
+	owned := prompt.OwnerID == ownerID(actor)
+	prompt.CanEdit = owned
+	prompt.CanDelete = owned
 }
 
 func (s *Service) Conversations(actor identity.Actor, search string) ([]model.Conversation, error) {

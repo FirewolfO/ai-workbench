@@ -81,6 +81,8 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
 .provider-empty span { margin-top: -55px; font-size: 12px; }
 .filter-line { display: flex; gap: 9px; width: min(520px, 100%); margin-bottom: 18px; }
 .prompt-card { display: flex; flex-direction: column; min-height: 288px; padding: 18px; }
+.prompt-card header, .prompt-card header > span { display: flex; align-items: center; gap: 7px; }
+.prompt-card header { justify-content: space-between; min-height: 32px; }
 .prompt-card .favorite { color: #d28b18; }
 .prompt-card h3 { margin: 15px 0 7px; font-size: 16px; }
 .prompt-card > p { display: -webkit-box; overflow: hidden; margin: 0 0 13px; color: #6e7976; font-size: 12px; line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }

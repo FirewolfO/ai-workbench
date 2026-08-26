@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChatLineRound, Close, CopyDocument, Delete, Edit, MagicStick, Menu, MoreFilled, Paperclip, Plus, Promotion, Refresh, Search, Setting, Star, StarFilled, VideoPause } from '@element-plus/icons-vue'
+import { ChatLineRound, Close, CopyDocument, Delete, Edit, Expand, MagicStick, MoreFilled, Paperclip, Plus, Promotion, Refresh, Search, Setting, Star, StarFilled, VideoPause } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiMessage, workbenchApi } from '@/api'
 import { renderMarkdown } from '@/utils/markdown'
@@ -76,7 +76,10 @@ function syncPendingModelSelection() {
   if (!provider.models.includes(pendingModel.value)) pendingModel.value = provider.defaultModel
 }
 function refreshModelsWhenVisible() {
-  if (!document.hidden) void refreshModels(true)
+  if (!document.hidden) {
+    void refreshModels(true)
+    void workbenchApi.prompts().then(items => { prompts.value = items }).catch(() => undefined)
+  }
 }
 async function loadCurrent(id: string) {
   generationPoll += 1
@@ -96,10 +99,12 @@ async function loadCurrent(id: string) {
 async function initialize() {
   loading.value = true
   try {
+    const initialPrompt = typeof route.query.prompt === 'string' ? route.query.prompt : ''
     await Promise.all([loadLists(), refreshModels(true, true)])
     const id = typeof route.params.id === 'string' ? route.params.id : ''
     if (id) await loadCurrent(id)
-    if (typeof route.query.prompt === 'string') { draft.value = route.query.prompt; await router.replace({ path: route.path }) }
+    else await openLatestOrCreate()
+    if (initialPrompt) { draft.value = initialPrompt; await router.replace({ path: route.path }) }
   } catch (error) { ElMessage.error(apiMessage(error, '工作台加载失败')) }
   finally { loading.value = false }
 }
@@ -116,6 +121,15 @@ async function createConversation() {
     await router.push(`/chat/${conversation.id}`)
   }
   catch (error) { ElMessage.error(apiMessage(error, '创建对话失败')) }
+}
+async function openLatestOrCreate() {
+  if (typeof route.params.id === 'string') return
+  const latest = conversations.value.reduce<Conversation | undefined>((result, item) => !result || new Date(item.updatedAt).getTime() > new Date(result.updatedAt).getTime() ? item : result, undefined)
+  if (latest) {
+    await router.replace({ path: `/chat/${latest.id}`, query: route.query })
+    return
+  }
+  if (models.value.length) await createConversation()
 }
 async function send() {
   const content = draft.value.trim()
@@ -281,6 +295,7 @@ watch(() => route.params.id, (id) => {
     sending.value = false
     stopping.value = false
     current.value = null
+    void openLatestOrCreate()
   }
 })
 onMounted(() => {
@@ -319,7 +334,7 @@ onBeforeUnmount(() => {
         <el-tooltip content="刷新模型列表"><el-button text :icon="Refresh" :loading="refreshingModels" aria-label="刷新模型列表" @click="refreshModels(true, true)" /></el-tooltip>
       </div>
       <template v-if="current">
-        <header class="chat-header"><div class="chat-title"><el-button class="mobile-conversation-toggle" text :icon="Menu" aria-label="打开对话列表" @click="mobileConversationsOpen = true" /><div><h2>{{ current.title }}</h2><span>{{ activeModel?.name || '模型' }} · {{ current.model }}<template v-if="activeModel?.webSearchEnabled"> · 可联网</template></span></div></div><div><el-button text :icon="current.pinned ? StarFilled : Star" aria-label="置顶" @click="togglePin" /><el-dropdown trigger="click"><el-button text :icon="MoreFilled" aria-label="更多操作" /><template #dropdown><el-dropdown-menu><el-dropdown-item :icon="Edit" @click="rename">重命名</el-dropdown-item><el-dropdown-item :icon="Setting" @click="openSettings">对话设置</el-dropdown-item><el-dropdown-item divided :icon="Delete" @click="remove">删除对话</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div></header>
+        <header class="chat-header"><div class="chat-title"><el-button class="mobile-conversation-toggle" text :icon="Expand" aria-label="打开对话列表" @click="mobileConversationsOpen = true" /><div><h2>{{ current.title }}</h2><span>{{ activeModel?.name || '模型' }} · {{ current.model }}<template v-if="activeModel?.webSearchEnabled"> · 可联网</template></span></div></div><div><el-button text :icon="current.pinned ? StarFilled : Star" aria-label="置顶" @click="togglePin" /><el-dropdown trigger="click"><el-button text :icon="MoreFilled" aria-label="更多操作" /><template #dropdown><el-dropdown-menu><el-dropdown-item :icon="Edit" @click="rename">重命名</el-dropdown-item><el-dropdown-item :icon="Setting" @click="openSettings">对话设置</el-dropdown-item><el-dropdown-item divided :icon="Delete" @click="remove">删除对话</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div></header>
         <div ref="thread" class="message-thread">
           <div v-if="!displayMessages.length" class="chat-empty"><span class="brand-symbol">AI</span><h3>从一个问题开始</h3><p>{{ current.systemPrompt || '选择提示词，或直接输入你想处理的事情。' }}</p></div>
           <article v-for="message in displayMessages" :key="message.id" class="message-row" :class="message.role">
@@ -343,9 +358,9 @@ onBeforeUnmount(() => {
           <el-tooltip :content="sending ? '停止生成' : '发送'"><el-button class="send-button" :type="sending ? 'danger' : 'primary'" :icon="sending ? VideoPause : Promotion" circle :aria-label="sending ? '停止生成' : '发送消息'" @click="sending ? stop() : send()" /></el-tooltip>
         </footer>
       </template>
-      <div v-else class="workspace-empty"><span class="brand-symbol">AI</span><h2>今天想完成什么？</h2><p>打开已有对话继续，或者创建一个新对话。</p><div class="workspace-empty-actions"><el-button class="mobile-conversation-toggle" :icon="Menu" @click="mobileConversationsOpen = true">对话列表</el-button><el-button type="primary" :icon="Plus" @click="createConversation">新建对话</el-button></div></div>
+      <div v-else class="workspace-empty"><span class="brand-symbol">AI</span><h2>今天想完成什么？</h2><p>打开已有对话继续，或者创建一个新对话。</p><div class="workspace-empty-actions"><el-button class="mobile-conversation-toggle" :icon="Expand" @click="mobileConversationsOpen = true">对话列表</el-button><el-button type="primary" :icon="Plus" @click="createConversation">新建对话</el-button></div></div>
     </div>
-    <el-drawer v-model="promptOpen" title="选择提示词" size="min(320px, 78vw)"><div class="prompt-drawer-list"><button v-for="item in prompts" :key="item.id" type="button" @click="selectPrompt(item)"><span><strong>{{ item.title }}</strong><el-tag v-if="item.category" size="small" effect="plain">{{ item.category }}</el-tag></span><p>{{ item.content }}</p></button><el-empty v-if="!prompts.length" description="还没有提示词" /></div></el-drawer>
+    <el-drawer v-model="promptOpen" title="选择提示词" size="min(320px, 78vw)"><div class="prompt-drawer-list"><button v-for="item in prompts" :key="item.id" type="button" @click="selectPrompt(item)"><span><strong>{{ item.title }}</strong><el-tag v-if="item.shared" type="success" size="small" effect="plain">共享</el-tag><el-tag v-if="item.category" size="small" effect="plain">{{ item.category }}</el-tag></span><p>{{ item.content }}</p></button><el-empty v-if="!prompts.length" description="还没有提示词" /></div></el-drawer>
     <el-drawer v-model="settingsOpen" title="对话设置" size="min(460px, 94vw)"><el-form label-position="top"><el-form-item label="供应商"><el-select v-model="settings.providerId" filterable style="width: 100%" @change="selectSettingsModel"><el-option v-for="item in models" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item><el-form-item label="模型"><el-select v-model="settings.model" filterable style="width: 100%"><el-option v-for="item in settingsModelNames" :key="item" :label="item" :value="item" /></el-select></el-form-item><el-form-item label="推理档位"><el-segmented v-model="settings.reasoningEffort" :options="effortOptions" /></el-form-item><el-form-item label="系统提示词"><el-input v-model="settings.systemPrompt" type="textarea" :rows="8" maxlength="10000" show-word-limit /></el-form-item><el-button type="primary" style="width: 100%" @click="saveSettings">保存设置</el-button></el-form></el-drawer>
   </section>
 </template>

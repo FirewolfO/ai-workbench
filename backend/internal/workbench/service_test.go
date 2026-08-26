@@ -115,6 +115,35 @@ func TestPromptLifecycleAndProviderConflict(t *testing.T) {
 	}
 }
 
+func TestSharedPromptsAreReadableButOnlyOwnersCanManageThem(t *testing.T) {
+	service := testService(t)
+	admin := identity.Actor{ID: "internal:admin", Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{ID: "people:alice", Username: "alice", Role: identity.RoleUser}
+	bob := identity.Actor{ID: "people:bob", Username: "bob", Role: identity.RoleUser}
+	shared := true
+
+	prompt, err := service.CreatePrompt(admin, PromptInput{Title: "共享总结", Content: "总结以下内容", Shared: &shared})
+	if err != nil || !prompt.Shared || !prompt.CanEdit || !prompt.CanDelete {
+		t.Fatalf("CreatePrompt(shared) = %#v, %v", prompt, err)
+	}
+	visible, err := service.Prompts(alice, "")
+	if err != nil || len(visible) != 1 || visible[0].ID != prompt.ID || visible[0].CanEdit || visible[0].CanDelete {
+		t.Fatalf("Prompts(alice) = %#v, %v", visible, err)
+	}
+	if _, err := service.UsePrompt(alice, prompt.ID); err != nil {
+		t.Fatalf("UsePrompt(shared) = %v", err)
+	}
+	if _, err := service.UpdatePrompt(alice, prompt.ID, PromptInput{Title: "篡改", Content: "篡改"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UpdatePrompt(shared by non-owner) error = %v", err)
+	}
+	if err := service.DeletePrompt(bob, prompt.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeletePrompt(shared by non-owner) error = %v", err)
+	}
+	if _, err := service.CreatePrompt(alice, PromptInput{Title: "非法共享", Content: "内容", Shared: &shared}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("ordinary user shared prompt error = %v", err)
+	}
+}
+
 func TestSummarizeNewsUsesOwnedProviderAndCachesResult(t *testing.T) {
 	service := testServiceWithModels(t, summaryModels{})
 	admin := identity.Actor{ID: "admin", Username: "admin", Source: "internal", Role: identity.RoleAdmin}

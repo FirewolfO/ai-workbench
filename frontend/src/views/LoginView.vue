@@ -44,6 +44,7 @@ async function loginInternal() {
         <el-button type="primary" size="large" native-type="submit" :loading="loading"><el-icon><Lock /></el-icon>登录<el-icon><ArrowRight /></el-icon></el-button>
       </el-form>
       <el-button v-else type="primary" size="large" :loading="loading" @click="loginPeople"><el-icon><Lock /></el-icon>使用 People 登录<el-icon><ArrowRight /></el-icon></el-button>
+      <el-button text size="large" @click="router.replace(destination())">暂不登录</el-button>
       <small>{{ mode === 'internal' ? 'AI Workbench 内部身份' : 'People 企业身份服务' }}</small>
     </section>
     <section class="login-preview" aria-hidden="true">

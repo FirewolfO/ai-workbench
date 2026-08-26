@@ -1,13 +1,18 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChatLineRound, Close, Compass, Connection, DataAnalysis, MagicStick, Menu as MenuIcon, SwitchButton, TrendCharts, User } from '@element-plus/icons-vue'
+import { ChatLineRound, Close, Compass, Connection, DataAnalysis, Download, MagicStick, Menu as MenuIcon, SwitchButton, TrendCharts, User } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
+
+declare global {
+  interface Window { AIWorkbenchNative?: { checkForUpdate: () => void } }
+}
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const drawerOpen = ref(false)
+const availableUpdate = ref<{ version: string; size: number } | null>(null)
 const pageTitle = computed(() => String(route.meta.title || 'AI 工作台'))
 const items = computed(() => [
   { path: '/chat', label: '对话', icon: ChatLineRound },
@@ -19,6 +24,15 @@ const items = computed(() => [
 ])
 
 async function logout() { await auth.logout(); await router.replace('/chat') }
+function receiveAppUpdate(event: Event) {
+  const detail = (event as CustomEvent<{ version?: string; size?: number }>).detail
+  if (detail?.version) availableUpdate.value = { version: detail.version, size: Number(detail.size) || 0 }
+}
+onMounted(() => {
+  window.addEventListener('ai-workbench-app-update', receiveAppUpdate)
+  window.AIWorkbenchNative?.checkForUpdate()
+})
+onBeforeUnmount(() => window.removeEventListener('ai-workbench-app-update', receiveAppUpdate))
 </script>
 
 <template>
@@ -43,6 +57,7 @@ async function logout() { await auth.logout(); await router.replace('/chat') }
       <header class="topbar">
         <el-button class="mobile-menu" text :icon="MenuIcon" aria-label="打开功能导航" @click="drawerOpen = true" />
         <h1>{{ pageTitle }}</h1>
+        <a v-if="availableUpdate" class="app-update-link" :href="`ai-workbench://update?version=${encodeURIComponent(availableUpdate.version)}`" aria-label="下载并更新新版本"><el-icon><Download /></el-icon><span>新版本</span><b>v{{ availableUpdate.version }}</b></a>
         <el-dropdown v-if="auth.authenticated" trigger="click">
           <button class="identity-button" type="button"><span>{{ auth.user?.displayName?.slice(0, 1) || 'U' }}</span><strong>{{ auth.user?.displayName || auth.user?.username }}</strong></button>
           <template #dropdown><el-dropdown-menu><el-dropdown-item disabled>{{ auth.user?.username }}</el-dropdown-item><el-dropdown-item divided :icon="SwitchButton" @click="logout">退出登录</el-dropdown-item></el-dropdown-menu></template>

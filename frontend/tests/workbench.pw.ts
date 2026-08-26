@@ -19,9 +19,11 @@ const frontier = {
   ],
 }
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page }, testInfo) => {
   let queued = false
   let generationPolls = 0
+  let attachmentSequence = 0
+  const emptyConversationList = testInfo.title.includes('before creating a conversation')
   await page.addInitScript(() => {
     sessionStorage.setItem('ai_workbench_access_token', 'visual-token')
     sessionStorage.setItem('ai_workbench_session', JSON.stringify({ user: { id: 'internal:alice', username: 'alice', displayName: 'Alice', source: 'internal', role: 'user' }, expiresAt: '2099-01-01T00:00:00Z' }))
@@ -53,11 +55,48 @@ test.beforeEach(async ({ page }) => {
     else if (path.endsWith('/conversations')) {
       data = route.request().method() === 'POST'
         ? { ...newConversation, ...(route.request().postDataJSON() as object) }
-        : [conversation]
+        : emptyConversationList ? [] : [conversation]
     }
+    else if (path.endsWith('/attachments') && route.request().method() === 'POST') {
+      attachmentSequence += 1
+      const filename = /filename="([^"]+)"/.exec(route.request().postData() || '')?.[1] || `attachment-${attachmentSequence}.txt`
+      await new Promise((resolve) => setTimeout(resolve, 800))
+      data = { id: `att_${attachmentSequence}`, name: filename, contentType: 'text/plain', size: 12, expiresAt: '2099-01-01T00:00:00Z' }
+    }
+    else if (path.includes('/attachments/') && route.request().method() === 'DELETE') data = { deleted: true }
     else if (path.endsWith('/frontier')) data = frontier
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 'OK', message: 'success', data }) })
   })
+})
+
+test('attachments upload concurrently with independent progress', async ({ page }) => {
+  const uploadRequests: string[] = []
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/attachments')) uploadRequests.push(request.url())
+  })
+  await page.goto('/chat/cnv_demo')
+  const input = page.locator('input[type="file"]')
+  await input.setInputFiles({ name: 'first-plan.txt', mimeType: 'text/plain', buffer: Buffer.from('first') })
+  await expect(page.getByText('first-plan.txt')).toBeVisible()
+  await input.setInputFiles([
+    { name: 'second-plan.txt', mimeType: 'text/plain', buffer: Buffer.from('second') },
+    { name: 'third-plan.txt', mimeType: 'text/plain', buffer: Buffer.from('third') },
+  ])
+  await expect(page.getByText('second-plan.txt')).toBeVisible()
+  await expect(page.getByText('third-plan.txt')).toBeVisible()
+  await expect.poll(() => uploadRequests.length).toBe(3)
+  await expect(page.locator('.attachment-chip.is-uploading')).toHaveCount(3)
+  await expect(page.locator('.attachment-chip.is-ready')).toHaveCount(3, { timeout: 3_000 })
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeEnabled()
+})
+
+test('native update event exposes the in-app update action', async ({ page }) => {
+  await page.goto('/chat/cnv_demo')
+  await expect(page.getByRole('heading', { level: 1, name: '对话' })).toBeVisible()
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('ai-workbench-app-update', { detail: { version: '1.1.5', size: 40_000 } })))
+  const update = page.getByRole('link', { name: '下载并更新新版本' })
+  await expect(update).toBeVisible()
+  await expect(update).toHaveAttribute('href', 'ai-workbench://update?version=1.1.5')
 })
 
 test('long model generation completes through background polling', async ({ page }) => {
@@ -121,7 +160,7 @@ test('conversation workspace is usable without overflow', async ({ page }, testI
   await expect(page.getByText('用户管理', { exact: true })).toHaveCount(0)
 
   if (testInfo.project.name === 'mobile') {
-    await page.getByRole('button', { name: '打开导航' }).click()
+    await page.getByRole('button', { name: '打开功能导航' }).click()
     const navigationDrawer = page.locator('.el-drawer').filter({ hasText: '功能' })
     await expect(navigationDrawer).toBeVisible()
     expect((await navigationDrawer.boundingBox())?.width).toBeLessThanOrEqual(221)

@@ -16,6 +16,7 @@ import android.util.Log;
 import android.view.Gravity;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
+import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
 import android.webkit.SafeBrowsingResponse;
 import android.webkit.ValueCallback;
@@ -49,12 +50,16 @@ public final class MainActivity extends Activity {
     static final String UPDATE_PREFERENCES = "app_update";
     private static final int FILE_CHOOSER_REQUEST = 4102;
     private static final int INSTALL_PERMISSION_REQUEST = 4103;
+    private static final long UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000L;
 
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
     private AppUpdate pendingUpdate;
+    private AppUpdate availableUpdate;
     private boolean checkingForUpdate;
+    private long lastUpdateCheckAt;
+    private String promptedVersion = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -95,6 +100,14 @@ public final class MainActivity extends Activity {
             webView.restoreState(savedInstanceState);
         }
         checkForUpdate();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (System.currentTimeMillis() - lastUpdateCheckAt >= UPDATE_CHECK_INTERVAL_MS) {
+            checkForUpdate();
+        }
     }
 
     private void showStartupError(FrameLayout root, RuntimeException error) {
@@ -145,6 +158,7 @@ public final class MainActivity extends Activity {
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false);
         WebView.startSafeBrowsing(this, null);
+        webView.addJavascriptInterface(new WorkbenchNativeBridge(), "AIWorkbenchNative");
         webView.setWebViewClient(new WorkbenchWebViewClient());
         webView.setWebChromeClient(new WorkbenchChromeClient());
         webView.setDownloadListener(this::download);
@@ -220,6 +234,7 @@ public final class MainActivity extends Activity {
             return;
         }
         checkingForUpdate = true;
+        lastUpdateCheckAt = System.currentTimeMillis();
         networkExecutor.execute(() -> {
             AppUpdate update = null;
             try {
@@ -244,7 +259,12 @@ public final class MainActivity extends Activity {
             runOnUiThread(() -> {
                 checkingForUpdate = false;
                 if (result != null && result.isValid() && AppUpdate.isNewer(result.version, BuildConfig.VERSION_NAME)) {
-                    showUpdatePrompt(result);
+                    availableUpdate = result;
+                    notifyWebUpdate();
+                    if (!result.version.equals(promptedVersion)) {
+                        promptedVersion = result.version;
+                        showUpdatePrompt(result);
+                    }
                 }
             });
         });
@@ -269,6 +289,19 @@ public final class MainActivity extends Activity {
             return;
         }
         downloadPendingUpdate();
+    }
+
+    private void notifyWebUpdate() {
+        if (webView == null || availableUpdate == null) return;
+        try {
+            JSONObject detail = new JSONObject()
+                    .put("version", availableUpdate.version)
+                    .put("size", availableUpdate.size);
+            webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('ai-workbench-app-update',{detail:"
+                    + detail + "}));", null);
+        } catch (Exception ignored) {
+            // The native dialog remains available if the web page is being recreated.
+        }
     }
 
     private void downloadPendingUpdate() {
@@ -317,7 +350,11 @@ public final class MainActivity extends Activity {
             }
             fileCallback = callback;
             try {
-                startActivityForResult(params.createIntent(), FILE_CHOOSER_REQUEST);
+                Intent chooser = params.createIntent();
+                if (params.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE) {
+                    chooser.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                }
+                startActivityForResult(chooser, FILE_CHOOSER_REQUEST);
                 return true;
             } catch (ActivityNotFoundException error) {
                 fileCallback = null;
@@ -327,11 +364,26 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private final class WorkbenchNativeBridge {
+        @JavascriptInterface
+        public void checkForUpdate() {
+            runOnUiThread(() -> {
+                if (availableUpdate != null) notifyWebUpdate();
+                else MainActivity.this.checkForUpdate();
+            });
+        }
+    }
+
     private final class WorkbenchWebViewClient extends WebViewClient {
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             Uri uri = request.getUrl();
             String host = uri.getHost();
+            if ("ai-workbench".equals(uri.getScheme()) && "update".equals(host)) {
+                if (availableUpdate != null) showUpdatePrompt(availableUpdate);
+                else checkForUpdate();
+                return true;
+            }
             if ("https".equals(uri.getScheme()) && ("ai.lxvb.top".equals(host) || "people.lxvb.top".equals(host))) {
                 return false;
             }
@@ -341,6 +393,12 @@ public final class MainActivity extends Activity {
                 Toast.makeText(MainActivity.this, R.string.link_failed, Toast.LENGTH_SHORT).show();
             }
             return true;
+        }
+
+        @Override
+        public void onPageFinished(WebView view, String url) {
+            super.onPageFinished(view, url);
+            if (url != null && url.startsWith(APP_URL)) notifyWebUpdate();
         }
 
         @Override

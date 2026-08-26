@@ -8,4 +8,4 @@
 ./gradlew assembleDebug
 ```
 
-调试 APK 位于 `app/build/outputs/apk/debug/app-debug.apk`。客户端支持 Web 附件选择、系统返回导航、下载、People OAuth、系统栏安全区和应用内版本更新。
+调试 APK 位于 `app/build/outputs/apk/debug/app-debug.apk`。客户端支持 Web 多附件选择、系统返回导航、下载、People OAuth、系统栏安全区和应用内版本更新。应用会在启动及回到前台时自动检查新版本，并在网页顶栏保留可再次触发下载更新的提示。

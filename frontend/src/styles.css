@@ -29,8 +29,11 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
 .sidebar-status span { width: 7px; height: 7px; border-radius: 50%; background: #62bf88; }
 .app-main { min-width: 0; flex: 1; height: 100%; overflow: auto; }
 .topbar { position: sticky; top: 0; z-index: 15; display: flex; align-items: center; height: 64px; padding: 0 28px; border-bottom: 1px solid #dfe5e2; background: rgba(255,255,255,.96); }
-.topbar h1 { flex: 1; margin: 0; font-size: 17px; font-weight: 650; }
+.topbar h1 { min-width: 0; flex: 1; overflow: hidden; margin: 0; font-size: 17px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .mobile-menu { display: none; margin-right: 8px; }
+.app-update-link { display: inline-flex; align-items: center; min-height: 32px; margin-right: 12px; padding: 0 9px; border: 1px solid #d4a63e; border-radius: 6px; color: #725412; background: #fff7df; font-size: 11px; text-decoration: none; }
+.app-update-link .el-icon { margin-right: 5px; }
+.app-update-link b { margin-left: 4px; font-weight: 750; }
 .identity-button { display: flex; align-items: center; gap: 9px; max-width: 220px; padding: 4px 7px 4px 4px; border: 0; border-radius: 6px; color: #27312f; background: transparent; cursor: pointer; }
 .identity-button:hover { background: #f0f3f2; }
 .identity-button > span { display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 30px; border-radius: 50%; color: #fff; background: #176b55; }
@@ -150,8 +153,14 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
 .file-input { display: none; }
 .attachment-list { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 6px; }
 .attachment-list > span, .message-attachments span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 260px; padding: 4px 6px; border-radius: 5px; color: #53615d; background: #edf1f0; font-size: 11px; }
-.attachment-list b { overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-.attachment-list button { display: grid; place-items: center; padding: 0; border: 0; color: #7a8582; background: transparent; cursor: pointer; }
+.attachment-list .attachment-chip { position: relative; isolation: isolate; overflow: hidden; min-height: 29px; padding: 5px 6px; border: 1px solid #dce4e1; background: #f4f6f5; }
+.attachment-chip::before { position: absolute; z-index: -1; inset: 0 auto 0 0; width: var(--upload-progress); background: #d9ebe5; content: ""; transition: width .18s ease; }
+.attachment-chip.is-failed { border-color: #e5b8af; color: #a74434; }
+.attachment-chip.is-failed::before { background: #f7e5e1; }
+.attachment-list b { overflow: hidden; min-width: 44px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-list .attachment-status { flex: 0 0 auto; color: #397967; font-size: 10px; font-weight: 650; }
+.attachment-list .is-failed .attachment-status { color: #b54836; }
+.attachment-list button { display: grid; place-items: center; width: 20px; height: 20px; flex: 0 0 20px; padding: 0; border: 0; color: #7a8582; background: transparent; cursor: pointer; }
 .message-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .thinking span { margin-left: 4px; color: #7a8582; font-size: 11px; }
 .chat-empty, .workspace-empty { display: grid; place-items: center; align-content: center; height: 100%; text-align: center; }
@@ -211,6 +220,10 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
   .desktop-sidebar { display: none; }
   .mobile-menu { display: inline-flex; }
   .topbar { height: 58px; padding: 0 14px; }
+  .topbar h1 { font-size: 15px; }
+  .app-update-link { min-width: 32px; margin-right: 7px; padding: 0 7px; }
+  .app-update-link span { display: none; }
+  .app-update-link b { margin-left: 3px; }
   .identity-button strong { display: none; }
   .page { width: calc(100% - 28px); padding: 24px 0 38px; }
   .page-heading { align-items: flex-start; }
@@ -245,6 +258,9 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
   .message-row.user .message-body { max-width: 86%; padding: 10px 13px; border-radius: 8px; background: #f0f3f2; }
   .message-row.user .message-body p { margin: 0; line-height: 1.6; }
   .composer { width: calc(100% - 20px); margin-bottom: 10px; box-shadow: 0 4px 16px rgba(24, 40, 36, .08); }
+  .attachment-list { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 7px; scrollbar-width: none; }
+  .attachment-list::-webkit-scrollbar { display: none; }
+  .attachment-list .attachment-chip { min-width: min(240px, 72vw); max-width: min(240px, 72vw); }
   .composer-tools { display: block; }
   .composer-actions { display: grid; grid-template-columns: 32px 32px minmax(0, 1fr); width: 100%; gap: 4px; }
   .composer-effort { width: 100%; min-width: 0; }

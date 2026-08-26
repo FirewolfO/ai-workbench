@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChatLineRound, Close, CopyDocument, Delete, Edit, Expand, MagicStick, MoreFilled, Paperclip, Plus, Promotion, Refresh, Search, Setting, Star, StarFilled, VideoPause } from '@element-plus/icons-vue'
+import { ChatLineRound, CircleCheck, Close, CopyDocument, Delete, Edit, Expand, MagicStick, MoreFilled, Paperclip, Plus, Promotion, Refresh, Search, Setting, Star, StarFilled, VideoPause } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiMessage, workbenchApi } from '@/api'
 import { renderMarkdown } from '@/utils/markdown'
@@ -14,7 +14,6 @@ const auth = useAuthStore()
 const loading = ref(true)
 const sending = ref(false)
 const stopping = ref(false)
-const uploading = ref(false)
 const switchingModel = ref(false)
 const refreshingModels = ref(false)
 const search = ref('')
@@ -23,7 +22,18 @@ const conversations = ref<Conversation[]>([])
 const current = ref<Conversation | null>(null)
 const models = ref<AvailableModel[]>([])
 const prompts = ref<Prompt[]>([])
-const attachments = ref<Attachment[]>([])
+type UploadStatus = 'uploading' | 'ready' | 'failed'
+interface AttachmentUpload {
+  localId: string
+  file: File
+  name: string
+  progress: number
+  status: UploadStatus
+  error: string
+  attachment?: Attachment
+  controller?: AbortController
+}
+const attachmentUploads = ref<AttachmentUpload[]>([])
 const pendingProviderId = ref('')
 const pendingModel = ref('')
 const promptOpen = ref(false)
@@ -36,6 +46,10 @@ const selectedProviderId = computed(() => current.value?.providerId || pendingPr
 const selectedModel = computed(() => current.value?.model || pendingModel.value)
 const activeModel = computed(() => models.value.find((item) => item.id === selectedProviderId.value))
 const displayMessages = computed(() => current.value?.messages?.filter((message) => message.status !== 'generating') || [])
+const readyAttachments = computed(() => attachmentUploads.value.flatMap((item) => item.attachment ? [item.attachment] : []))
+const uploadingCount = computed(() => attachmentUploads.value.filter((item) => item.status === 'uploading').length)
+const failedUploadCount = computed(() => attachmentUploads.value.filter((item) => item.status === 'failed').length)
+const canSend = computed(() => !sending.value && uploadingCount.value === 0 && failedUploadCount.value === 0 && Boolean(draft.value.trim() || readyAttachments.value.length))
 const activeModelNames = computed(() => {
   const result = [...(activeModel.value?.models || [])]
   const selected = selectedModel.value
@@ -127,21 +141,19 @@ async function openLatestOrCreate() {
   const latest = conversations.value.reduce<Conversation | undefined>((result, item) => !result || new Date(item.updatedAt).getTime() > new Date(result.updatedAt).getTime() ? item : result, undefined)
   if (latest) {
     await router.replace({ path: `/chat/${latest.id}`, query: route.query })
-    return
   }
-  if (models.value.length) await createConversation()
 }
 async function send() {
   const content = draft.value.trim()
-  if ((!content && !attachments.value.length) || !current.value || sending.value) return
+  if (!canSend.value || !current.value) return
   const conversationID = current.value.id
-  const pendingAttachments = [...attachments.value]
+  const pendingAttachments = [...readyAttachments.value]
   const optimisticContent = content || `请处理附件：${pendingAttachments.map((item) => item.name).join('、')}`
   const optimistic: Message = { id: `local-${Date.now()}`, conversationId: conversationID, role: 'user', content: optimisticContent, attachments: pendingAttachments.map((item) => item.name), promptTokens: 0, completionTokens: 0, latencyMs: 0, status: 'completed', createdAt: new Date().toISOString() }
   current.value.messages ||= []
   current.value.messages.push(optimistic)
   draft.value = ''
-  attachments.value = []
+  attachmentUploads.value = []
   sending.value = true
   await scrollToEnd()
   try {
@@ -247,21 +259,63 @@ async function flushReasoning() {
     if (pendingReasoning) void flushReasoning()
   }
 }
-async function selectFiles(event: Event) {
+function localUploadID() {
+  return typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `upload-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+function selectFiles(event: Event) {
   const input = event.target as HTMLInputElement
   const files = Array.from(input.files || [])
   input.value = ''
-  if (attachments.value.length + files.length > 4) { ElMessage.warning('每次最多上传 4 个附件'); return }
-  if (files.some((file) => file.size > 8 * 1024 * 1024)) { ElMessage.warning('单个附件不能超过 8 MiB'); return }
-  uploading.value = true
-  try {
-    for (const file of files) attachments.value.push(await workbenchApi.uploadAttachment(file))
-  } catch (error) { ElMessage.error(apiMessage(error, '附件上传失败')) }
-  finally { uploading.value = false }
+  const availableSlots = 4 - attachmentUploads.value.length
+  if (availableSlots <= 0) { ElMessage.warning('每次最多上传 4 个附件'); return }
+  const valid = files.filter((file) => file.size <= 8 * 1024 * 1024)
+  const accepted = valid.slice(0, availableSlots)
+  if (valid.length !== files.length) ElMessage.warning('已跳过超过 8 MiB 的附件')
+  if (valid.length > accepted.length) ElMessage.warning('每次最多上传 4 个附件，多余文件未加入')
+  for (const file of accepted) {
+    const item = reactive<AttachmentUpload>({ localId: localUploadID(), file, name: file.name, progress: 0, status: 'uploading', error: '' })
+    attachmentUploads.value.push(item)
+    void uploadAttachment(item)
+  }
 }
-async function removeAttachment(item: Attachment) {
-  try { await workbenchApi.deleteAttachment(item.id); attachments.value = attachments.value.filter((attachment) => attachment.id !== item.id) }
-  catch (error) { ElMessage.error(apiMessage(error, '附件删除失败')) }
+async function uploadAttachment(item: AttachmentUpload) {
+  const controller = new AbortController()
+  item.controller = controller
+  item.progress = 0
+  item.status = 'uploading'
+  item.error = ''
+  try {
+    const attachment = await workbenchApi.uploadAttachment(item.file, (progress) => { item.progress = progress }, controller.signal)
+    if (!attachmentUploads.value.some((candidate) => candidate.localId === item.localId)) {
+      void workbenchApi.deleteAttachment(attachment.id).catch(() => undefined)
+      return
+    }
+    item.attachment = attachment
+    item.progress = 100
+    item.status = 'ready'
+  } catch (error) {
+    if (controller.signal.aborted) return
+    item.status = 'failed'
+    item.error = apiMessage(error, '上传失败')
+  } finally {
+    if (item.controller === controller) item.controller = undefined
+  }
+}
+function retryAttachment(item: AttachmentUpload) {
+  if (item.status === 'failed') void uploadAttachment(item)
+}
+function removeAttachment(item: AttachmentUpload) {
+  item.controller?.abort()
+  attachmentUploads.value = attachmentUploads.value.filter((candidate) => candidate.localId !== item.localId)
+  if (item.attachment) void workbenchApi.deleteAttachment(item.attachment.id).catch((error) => ElMessage.error(apiMessage(error, '附件删除失败')))
+}
+function clearUnusedAttachments() {
+  const unused = attachmentUploads.value
+  attachmentUploads.value = []
+  for (const item of unused) {
+    item.controller?.abort()
+    if (item.attachment) void workbenchApi.deleteAttachment(item.attachment.id).catch(() => undefined)
+  }
 }
 async function scrollToEnd() { await nextTick(); if (thread.value) thread.value.scrollTop = thread.value.scrollHeight }
 async function selectPrompt(item: Prompt) { await workbenchApi.usePrompt(item.id); draft.value = item.content; promptOpen.value = false; await nextTick() }
@@ -288,7 +342,7 @@ async function openConversation(id: string) { mobileConversationsOpen.value = fa
 
 watch(() => route.params.id, (id) => {
   mobileConversationsOpen.value = false
-  attachments.value = []
+  clearUnusedAttachments()
   if (typeof id === 'string' && id) void loadCurrent(id)
   else {
     generationPoll += 1
@@ -306,6 +360,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   generationPoll += 1
+  clearUnusedAttachments()
   if (modelRefreshTimer) window.clearInterval(modelRefreshTimer)
   if (reasoningTimer) window.clearTimeout(reasoningTimer)
   if (pendingReasoning) void flushReasoning()
@@ -344,18 +399,26 @@ onBeforeUnmount(() => {
           <article v-if="sending" class="message-row assistant"><span class="message-avatar">AI</span><div class="message-body thinking"><i></i><i></i><i></i><span>{{ stopping ? '正在停止' : '正在生成' }}</span></div></article>
         </div>
         <footer class="composer">
-          <div v-if="attachments.length" class="attachment-list"><span v-for="item in attachments" :key="item.id"><el-icon><Paperclip /></el-icon><b>{{ item.name }}</b><button type="button" :aria-label="`移除 ${item.name}`" @click="removeAttachment(item)"><el-icon><Close /></el-icon></button></span></div>
+          <div v-if="attachmentUploads.length" class="attachment-list" aria-live="polite">
+            <span v-for="item in attachmentUploads" :key="item.localId" class="attachment-chip" :class="`is-${item.status}`" :style="{ '--upload-progress': `${item.progress}%` }" :title="item.error || item.name">
+              <el-icon><Paperclip /></el-icon><b>{{ item.name }}</b>
+              <el-icon v-if="item.status === 'ready'" class="attachment-status"><CircleCheck /></el-icon>
+              <small v-else class="attachment-status">{{ item.status === 'failed' ? '失败' : `${item.progress}%` }}</small>
+              <button v-if="item.status === 'failed'" type="button" :aria-label="`重试 ${item.name}`" @click="retryAttachment(item)"><el-icon><Refresh /></el-icon></button>
+              <button type="button" :aria-label="`移除 ${item.name}`" @click="removeAttachment(item)"><el-icon><Close /></el-icon></button>
+            </span>
+          </div>
           <el-input v-model="draft" type="textarea" resize="none" :autosize="{ minRows: 2, maxRows: 7 }" maxlength="20000" placeholder="输入消息" @keydown.enter.exact.prevent="send" />
           <div class="composer-tools">
             <div class="composer-actions">
-              <el-tooltip content="上传附件"><el-button text :icon="Paperclip" :loading="uploading" aria-label="上传附件" @click="fileInput?.click()" /></el-tooltip>
+              <el-tooltip :content="attachmentUploads.length >= 4 ? '已达到 4 个附件上限' : '上传附件'"><el-button text :icon="Paperclip" :disabled="attachmentUploads.length >= 4" aria-label="上传附件" @click="fileInput?.click()" /></el-tooltip>
               <input ref="fileInput" class="file-input" type="file" multiple @change="selectFiles" />
               <el-tooltip content="选择提示词"><el-button text :icon="MagicStick" aria-label="选择提示词" @click="promptOpen = true" /></el-tooltip>
               <el-select :model-value="current.reasoningEffort" class="composer-effort" size="small" :disabled="sending" aria-label="推理档位" @change="changeReasoning"><el-option v-for="item in effortOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select>
             </div>
             <span>{{ draft.length }}/20000</span>
           </div>
-          <el-tooltip :content="sending ? '停止生成' : '发送'"><el-button class="send-button" :type="sending ? 'danger' : 'primary'" :icon="sending ? VideoPause : Promotion" circle :aria-label="sending ? '停止生成' : '发送消息'" @click="sending ? stop() : send()" /></el-tooltip>
+          <el-tooltip :content="sending ? '停止生成' : uploadingCount ? '等待附件上传完成' : failedUploadCount ? '请重试或移除失败附件' : '发送'"><el-button class="send-button" :type="sending ? 'danger' : 'primary'" :icon="sending ? VideoPause : Promotion" circle :disabled="!sending && !canSend" :aria-label="sending ? '停止生成' : '发送消息'" @click="sending ? stop() : send()" /></el-tooltip>
         </footer>
       </template>
       <div v-else class="workspace-empty"><span class="brand-symbol">AI</span><h2>今天想完成什么？</h2><p>打开已有对话继续，或者创建一个新对话。</p><div class="workspace-empty-actions"><el-button class="mobile-conversation-toggle" :icon="Expand" @click="mobileConversationsOpen = true">对话列表</el-button><el-button type="primary" :icon="Plus" @click="createConversation">新建对话</el-button></div></div>

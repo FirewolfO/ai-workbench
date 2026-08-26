@@ -103,10 +103,17 @@ export const workbenchApi = {
   deleteConversation: (id: string) => unwrap<{ deleted: boolean }>(api.delete(`/conversations/${id}`)),
   queueMessage: (id: string, content: string, attachmentIds: string[] = []) => unwrap<Message>(api.post(`/conversations/${id}/messages/async`, { content, attachmentIds })),
   stopGeneration: (id: string) => unwrap<{ stopped: boolean }>(api.post(`/conversations/${id}/stop`)),
-  uploadAttachment: (file: File) => {
+  uploadAttachment: (file: File, onProgress?: (progress: number) => void, signal?: AbortSignal) => {
     const data = new FormData()
     data.append('file', file)
-    return unwrap<Attachment>(api.post('/attachments', data))
+    return unwrap<Attachment>(api.post('/attachments', data, {
+      signal,
+      onUploadProgress: (event) => {
+        if (!onProgress) return
+        const total = event.total || file.size
+        onProgress(total > 0 ? Math.min(99, Math.round((event.loaded / total) * 100)) : 0)
+      },
+    }))
   },
   deleteAttachment: (id: string) => unwrap<{ deleted: boolean }>(api.delete(`/attachments/${id}`)),
   contentStatus: () => unwrap<ContentStatus>(api.get('/content/status')),

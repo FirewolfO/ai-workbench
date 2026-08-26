@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChatLineRound, Close, CopyDocument, Delete, Edit, MagicStick, MoreFilled, Paperclip, Plus, Promotion, Search, Setting, Star, StarFilled, VideoPause } from '@element-plus/icons-vue'
+import { ChatLineRound, Close, CopyDocument, Delete, Edit, MagicStick, Menu, MoreFilled, Paperclip, Plus, Promotion, Search, Setting, Star, StarFilled, VideoPause } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiMessage, workbenchApi } from '@/api'
 import { renderMarkdown } from '@/utils/markdown'
@@ -24,6 +24,7 @@ const prompts = ref<Prompt[]>([])
 const attachments = ref<Attachment[]>([])
 const promptOpen = ref(false)
 const settingsOpen = ref(false)
+const mobileConversationsOpen = ref(false)
 const thread = ref<HTMLElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const settings = reactive({ providerId: '', model: '', systemPrompt: '', reasoningEffort: 'medium' as ReasoningEffort })
@@ -58,7 +59,7 @@ async function createConversation() {
     if (auth.isAdmin) await router.push('/providers')
     return
   }
-  try { const conversation = await workbenchApi.createConversation(); conversations.value.unshift(conversation); await router.push(`/chat/${conversation.id}`) }
+  try { const conversation = await workbenchApi.createConversation(); conversations.value.unshift(conversation); mobileConversationsOpen.value = false; await router.push(`/chat/${conversation.id}`) }
   catch (error) { ElMessage.error(apiMessage(error, '创建对话失败')) }
 }
 async function send() {
@@ -136,25 +137,28 @@ function openSettings() { if (!current.value) return; Object.assign(settings, { 
 function selectSettingsModel(value: string) { const selected = models.value.find((item) => item.id === value); if (selected) settings.model = selected.defaultModel }
 async function saveSettings() { if (!current.value) return; try { current.value = await workbenchApi.updateConversation(current.value.id, { ...settings }); settingsOpen.value = false; ElMessage.success('对话设置已更新') } catch (error) { ElMessage.error(apiMessage(error, '保存失败')) } }
 async function copy(content: string) { try { await navigator.clipboard.writeText(content); ElMessage.success('已复制') } catch { ElMessage.error('复制失败') } }
+async function openConversation(id: string) { mobileConversationsOpen.value = false; await router.push(`/chat/${id}`) }
 
-watch(() => route.params.id, (id) => { attachments.value = []; if (typeof id === 'string') void loadCurrent(id); else current.value = null })
+watch(() => route.params.id, (id) => { mobileConversationsOpen.value = false; attachments.value = []; if (typeof id === 'string') void loadCurrent(id); else current.value = null })
 onMounted(initialize)
 </script>
 
 <template>
   <section class="chat-workspace">
-    <aside class="conversation-panel">
+    <button v-if="mobileConversationsOpen" class="conversation-scrim" type="button" aria-label="关闭对话列表" @click="mobileConversationsOpen = false" />
+    <aside class="conversation-panel" :class="{ 'mobile-open': mobileConversationsOpen }">
+      <header class="conversation-mobile-header"><strong>对话</strong><el-button text :icon="Close" aria-label="关闭对话列表" @click="mobileConversationsOpen = false" /></header>
       <el-button type="primary" :icon="Plus" @click="createConversation">新对话</el-button>
       <el-input v-model="search" :prefix-icon="Search" clearable placeholder="搜索对话" @keyup.enter="loadLists" @clear="loadLists" />
       <div class="conversation-list">
-        <button v-for="item in conversations" :key="item.id" type="button" :class="{ active: item.id === current?.id }" @click="router.push(`/chat/${item.id}`)">
+        <button v-for="item in conversations" :key="item.id" type="button" :class="{ active: item.id === current?.id }" @click="openConversation(item.id)">
           <el-icon><StarFilled v-if="item.pinned" /><ChatLineRound v-else /></el-icon><span><strong>{{ item.title }}</strong><small>{{ item.lastMessage || '还没有消息' }}</small></span><b>{{ item.messageCount }}</b>
         </button>
       </div>
     </aside>
     <div v-loading="loading" class="chat-main">
       <template v-if="current">
-        <header class="chat-header"><div><h2>{{ current.title }}</h2><span>{{ activeModel?.name || '模型' }} · {{ current.model }}</span></div><div><el-button text :icon="current.pinned ? StarFilled : Star" aria-label="置顶" @click="togglePin" /><el-dropdown trigger="click"><el-button text :icon="MoreFilled" aria-label="更多操作" /><template #dropdown><el-dropdown-menu><el-dropdown-item :icon="Edit" @click="rename">重命名</el-dropdown-item><el-dropdown-item :icon="Setting" @click="openSettings">对话设置</el-dropdown-item><el-dropdown-item divided :icon="Delete" @click="remove">删除对话</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div></header>
+        <header class="chat-header"><div class="chat-title"><el-button class="mobile-conversation-toggle" text :icon="Menu" aria-label="打开对话列表" @click="mobileConversationsOpen = true" /><div><h2>{{ current.title }}</h2><span>{{ activeModel?.name || '模型' }} · {{ current.model }}</span></div></div><div><el-button text :icon="current.pinned ? StarFilled : Star" aria-label="置顶" @click="togglePin" /><el-dropdown trigger="click"><el-button text :icon="MoreFilled" aria-label="更多操作" /><template #dropdown><el-dropdown-menu><el-dropdown-item :icon="Edit" @click="rename">重命名</el-dropdown-item><el-dropdown-item :icon="Setting" @click="openSettings">对话设置</el-dropdown-item><el-dropdown-item divided :icon="Delete" @click="remove">删除对话</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div></header>
         <div ref="thread" class="message-thread">
           <div v-if="!current.messages?.length" class="chat-empty"><span class="brand-symbol">AI</span><h3>从一个问题开始</h3><p>{{ current.systemPrompt || '选择提示词，或直接输入你想处理的事情。' }}</p></div>
           <article v-for="message in current.messages" :key="message.id" class="message-row" :class="message.role">
@@ -179,7 +183,7 @@ onMounted(initialize)
           <el-tooltip :content="sending ? '停止生成' : '发送'"><el-button class="send-button" :type="sending ? 'danger' : 'primary'" :icon="sending ? VideoPause : Promotion" circle :aria-label="sending ? '停止生成' : '发送消息'" @click="sending ? stop() : send()" /></el-tooltip>
         </footer>
       </template>
-      <div v-else class="workspace-empty"><span class="brand-symbol">AI</span><h2>今天想完成什么？</h2><p>选择左侧对话继续，或者创建一个新对话。</p><el-button type="primary" :icon="Plus" @click="createConversation">新建对话</el-button></div>
+      <div v-else class="workspace-empty"><span class="brand-symbol">AI</span><h2>今天想完成什么？</h2><p>打开已有对话继续，或者创建一个新对话。</p><div class="workspace-empty-actions"><el-button class="mobile-conversation-toggle" :icon="Menu" @click="mobileConversationsOpen = true">对话列表</el-button><el-button type="primary" :icon="Plus" @click="createConversation">新建对话</el-button></div></div>
     </div>
     <el-drawer v-model="promptOpen" title="选择提示词" size="min(460px, 94vw)"><div class="prompt-drawer-list"><button v-for="item in prompts" :key="item.id" type="button" @click="selectPrompt(item)"><span><strong>{{ item.title }}</strong><el-tag v-if="item.category" size="small" effect="plain">{{ item.category }}</el-tag></span><p>{{ item.content }}</p></button><el-empty v-if="!prompts.length" description="还没有提示词" /></div></el-drawer>
     <el-drawer v-model="settingsOpen" title="对话设置" size="min(460px, 94vw)"><el-form label-position="top"><el-form-item label="模型"><el-select v-model="settings.providerId" style="width: 100%" @change="selectSettingsModel"><el-option v-for="item in models" :key="item.id" :label="`${item.name} · ${item.defaultModel}`" :value="item.id" /></el-select></el-form-item><el-form-item label="模型 ID"><el-input v-model="settings.model" /></el-form-item><el-form-item label="推理档位"><el-segmented v-model="settings.reasoningEffort" :options="effortOptions" /></el-form-item><el-form-item label="系统提示词"><el-input v-model="settings.systemPrompt" type="textarea" :rows="8" maxlength="10000" show-word-limit /></el-form-item><el-button type="primary" style="width: 100%" @click="saveSettings">保存设置</el-button></el-form></el-drawer>

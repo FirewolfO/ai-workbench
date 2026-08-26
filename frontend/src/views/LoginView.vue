@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowRight, Lock, User } from '@element-plus/icons-vue'
@@ -10,7 +10,8 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const loading = ref(false)
-const mode = ref<'internal' | 'people'>('internal')
+const isAndroidApp = computed(() => /AIWorkbenchAndroid\//i.test(navigator.userAgent))
+const mode = ref<'internal' | 'people'>(/AIWorkbenchAndroid\//i.test(navigator.userAgent) ? 'people' : 'internal')
 const form = reactive({ username: '', password: '' })
 const destination = () => typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/') ? route.query.redirect : '/chat'
 
@@ -36,7 +37,7 @@ async function loginInternal() {
     <section class="login-panel">
       <div class="login-brand"><span>AI</span><strong>AI WORKBENCH</strong></div>
       <div class="login-copy"><p>企业 AI 工作空间</p><h1>我的 AI 工作台</h1><span>集中管理模型、对话与个人提示词。</span></div>
-      <el-segmented v-model="mode" :options="[{ label: '内部账号', value: 'internal' }, { label: 'People', value: 'people' }]" class="login-mode" />
+      <el-segmented v-if="!isAndroidApp" v-model="mode" :options="[{ label: '内部账号', value: 'internal' }, { label: 'People', value: 'people' }]" class="login-mode" />
       <el-form v-if="mode === 'internal'" class="login-form" @submit.prevent="loginInternal">
         <el-form-item><el-input v-model="form.username" :prefix-icon="User" size="large" placeholder="用户名" autocomplete="username" /></el-form-item>
         <el-form-item><el-input v-model="form.password" :prefix-icon="Lock" size="large" type="password" show-password placeholder="密码" autocomplete="current-password" @keyup.enter="loginInternal" /></el-form-item>

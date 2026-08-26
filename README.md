@@ -12,7 +12,7 @@
 - 个人提示词库，支持分类、搜索、收藏、使用次数及一键带入对话
 - 前沿项目发现，按 AI 项目、Skill 与插件检索 GitHub，并综合社区规模、活跃度与成熟度排序
 - 普通用户查看个人用量，管理员查看全部用户汇总用量
-- 内部账号、People OAuth 与 Permission 三种身份入口；对话和提示词按身份 ID 隔离
+- Web 端支持内部账号、People OAuth 与 Permission 三种身份入口，Android 端只允许 People 登录；对话和提示词按身份 ID 隔离
 - Android 15/16 原生客户端
 
 ## 登录与集成
@@ -56,11 +56,11 @@ npm --prefix frontend install
 
 安装后 API 与独立前端会随用户服务管理器自动启动，异常退出时自动重启。查看状态和日志可使用 `systemctl --user status ai-workbench-api ai-workbench-ui` 与 `journalctl --user -u ai-workbench-api -u ai-workbench-ui`。
 
-默认配置位于 `backend/.env.example` 和 `frontend/.env.example`。工作区默认使用 `http://10.251.237.216:5177/oauth/authorize` 作为 People 登录入口；仅在浏览器与 People 都运行于同一台机器时，才应将 `AI_WORKBENCH_PEOPLE_AUTHORIZE_URL` 覆盖为 `http://localhost:5177/oauth/authorize`。还可在 `backend/.env` 覆盖模型密钥加密主密钥、OAuth Client Secret、允许来源和数据库路径。`AI_WORKBENCH_ENCRYPTION_KEY` 轮换前必须迁移已有模型密钥，否则旧密文将无法解密。
+默认配置位于 `backend/.env.example` 和 `frontend/.env.example`。容器部署默认使用 `https://people.lxvb.top/oauth/authorize` 作为 People 登录入口；本地联调时可将 `AI_WORKBENCH_PEOPLE_AUTHORIZE_URL` 覆盖为本机 People 前端地址。还可在 `backend/.env` 覆盖模型密钥加密主密钥、OAuth Client Secret、允许来源和数据库路径。`AI_WORKBENCH_ENCRYPTION_KEY` 轮换前必须迁移已有模型密钥，否则旧密文将无法解密。
 
 ## Docker 与公网部署
 
-仓库根目录的 `compose.yaml` 会构建后端和 Nginx 前端。后端不直接暴露宿主机端口，Nginx 仅监听 `127.0.0.1:18082` 并将 `/api/` 同源反代到后端。SQLite、上传暂存目录和内部账号保存在 `workbench-data` volume。
+仓库根目录的 `compose.yaml` 会构建后端和 Nginx 前端。后端不直接暴露宿主机端口，Nginx 仅监听 `127.0.0.1:18082` 并将 `/api/` 同源反代到后端。后端通过仅容器可见的 `people-services` 网络访问 People edge。SQLite、上传暂存目录和内部账号保存在 `workbench-data` volume。
 
 ```bash
 export AI_WORKBENCH_ENCRYPTION_KEY='替换为至少 32 字符的随机值'
@@ -82,11 +82,11 @@ systemctl --user enable --now ai-workbench-model-tunnel.service
 
 该服务依赖 `~/.ssh/config` 中可用的 `lxvb` 主机别名，并将内网 `10.251.239.186:8081` 映射到生产宿主机。部署前应确认生产 Docker 网桥仍使用 `172.17.0.1`；若地址变化，需要同步修改 `deploy/nginx/model-relay.conf`。
 
-需要提供 APK 等静态下载文件时，将文件放入仓库根目录的 `downloads/`。Compose 会将该目录只读挂载到前端容器，可通过 `https://ai.lxvb.top/downloads/<文件名>` 下载；APK 构建产物不会提交到 Git。
+APK 统一发布到 `https://apps.lxvb.top`，AI Workbench 不再维护自己的下载入口；APK 构建产物不会提交到 Git。
 
 ## Android 客户端
 
-`android/` 是固定访问 `https://ai.lxvb.top` 的原生 WebView 客户端，包含系统文件选择、返回导航、下载、外部链接和 Safe Browsing。它使用 `compileSdk 36`、`targetSdk 36`、`minSdk 35`，覆盖 Android 15 和 Android 16。
+`android/` 是固定访问 `https://ai.lxvb.top` 的原生 WebView 客户端，移动界面采用全宽对话区、侧滑会话列表，并保留模型和推理档位选择。客户端只显示 People 登录，包含系统文件选择、返回导航、下载、Safe Browsing，以及通过统一应用中心检查、下载和安装新版本。它使用 `compileSdk 36`、`targetSdk 36`、`minSdk 35`，覆盖 Android 15 和 Android 16。
 
 ```bash
 cd android

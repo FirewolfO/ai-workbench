@@ -7,6 +7,18 @@ import (
 	"ai-workbench/internal/model"
 )
 
+func TestBuiltinOpenAIUsesSolModel(t *testing.T) {
+	for _, provider := range builtinProviders {
+		if provider.ID == "prv_builtin_openai" {
+			if provider.DefaultModel != "gpt-5.6-sol" {
+				t.Fatalf("OpenAI default model = %q", provider.DefaultModel)
+			}
+			return
+		}
+	}
+	t.Fatal("builtin OpenAI provider not found")
+}
+
 func TestSeedBuiltinProvidersOnceWithoutOverwritingExistingData(t *testing.T) {
 	database, err := Open(filepath.Join(t.TempDir(), "store.db"))
 	if err != nil {

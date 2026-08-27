@@ -2,7 +2,7 @@ name: ai-workbench
 
 services:
   image-tool:
-    image: danielgatis/rembg@sha256:941452fcbb884efa5f2e7e2457c0591e5e67016095316bf677db3fc108aa1b8e
+    image: dockerproxy.net/danielgatis/rembg@sha256:941452fcbb884efa5f2e7e2457c0591e5e67016095316bf677db3fc108aa1b8e
     restart: unless-stopped
     command: ["s", "-p", "8090", "-t", "2", "--no-ui"]
     environment:

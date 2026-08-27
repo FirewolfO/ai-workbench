@@ -18,6 +18,9 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteract
     pdf2docx==0.5.8 PyMuPDF==1.28.2 python-docx==1.2.0 fonttools==4.63.0 \
     numpy==2.4.6 opencv-python-headless==5.0.0.93 fire==0.7.1 \
     lxml==6.1.2 typing_extensions==4.16.0 termcolor==3.3.0
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends wget \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /out/ai-workbench /usr/local/bin/ai-workbench
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

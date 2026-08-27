@@ -87,6 +87,7 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
 .provider-card dd { display: flex; align-items: center; gap: 5px; overflow: hidden; margin: 0; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .provider-card .provider-error { display: -webkit-box; min-height: 34px; margin: -9px 0 14px; overflow: hidden; color: #b54836; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .provider-card footer { margin-top: auto; }
+.api-key-retention { margin-top: 8px; }
 .provider-empty { display: grid; place-items: center; min-height: 280px; border: 1px dashed #b8c5c1; border-radius: 7px; color: #60706c; background: transparent; cursor: pointer; }
 .provider-empty:hover { border-color: #176b55; color: #176b55; background: #fff; }
 .provider-empty .el-icon { font-size: 28px; }

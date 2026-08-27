@@ -242,11 +242,13 @@ func TestProviderHealthLifecycle(t *testing.T) {
 	models := &providerTestModels{catalog: []string{"model", "model-pro"}}
 	service := testServiceWithModels(t, models)
 	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
-	input := ProviderInput{Name: "Shared", BaseURL: "https://models.example/v1", DefaultModel: "model"}
+	input := ProviderInput{Name: "Shared", BaseURL: "https://models.example/v1", DefaultModel: "model", APIKey: "secret"}
 	provider, err := service.CreateProvider(admin, input)
-	if err != nil || provider.Available || provider.LastTestedAt != nil {
+	if err != nil || provider.Available || provider.LastTestedAt != nil || !provider.HasAPIKey {
 		t.Fatalf("new provider health = %#v, %v", provider, err)
 	}
+	originalCiphertext := provider.APIKeyCiphertext
+	input.APIKey = ""
 	result, err := service.TestProvider(context.Background(), admin, provider.ID)
 	if err != nil || result.ModelCount != 2 {
 		t.Fatalf("TestProvider() = %#v, %v", result, err)
@@ -270,12 +272,38 @@ func TestProviderHealthLifecycle(t *testing.T) {
 		t.Fatalf("failed provider test error = %v", err)
 	}
 	providers, _ = service.Providers(admin)
-	if providers[0].Available || providers[0].LastTestedAt == nil || providers[0].LastTestError != "upstream unavailable" {
+	if providers[0].Available || providers[0].LastTestedAt == nil || providers[0].LastTestError != "upstream unavailable" || !providers[0].HasAPIKey || providers[0].APIKeyCiphertext != originalCiphertext {
 		t.Fatalf("failed provider health = %#v", providers[0])
 	}
 	available, err := service.AvailableModels(identity.Actor{Username: "alice"})
 	if err != nil || len(available) != 0 {
 		t.Fatalf("failed provider should be unavailable: %#v, %v", available, err)
+	}
+}
+
+func TestProvidersSortUsableConnectionsFirst(t *testing.T) {
+	models := &providerTestModels{catalog: []string{"model"}}
+	service := testServiceWithModels(t, models)
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	failed, err := service.CreateProvider(admin, ProviderInput{Name: "Failed", BaseURL: "https://failed.example/v1", DefaultModel: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	usable := createAvailableProvider(t, service, admin, ProviderInput{Name: "Usable", BaseURL: "https://usable.example/v1", DefaultModel: "model"})
+	disabled := createAvailableProvider(t, service, admin, ProviderInput{Name: "Disabled", BaseURL: "https://disabled.example/v1", DefaultModel: "model"})
+	enabled := false
+	if _, err := service.UpdateProvider(admin, disabled.ID, ProviderInput{
+		Name: disabled.Name, BaseURL: disabled.BaseURL, DefaultModel: disabled.DefaultModel, Protocol: disabled.Protocol, Enabled: &enabled,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	providers, err := service.Providers(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(providers) != 3 || providers[0].ID != usable.ID || providers[1].ID != failed.ID || providers[2].ID != disabled.ID {
+		t.Fatalf("provider order = %#v", providers)
 	}
 }
 

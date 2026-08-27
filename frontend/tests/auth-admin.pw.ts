@@ -71,3 +71,36 @@ test('admin can configure a Responses provider with web search', async ({ page }
   await dialog.getByRole('button', { name: '保存' }).click()
   expect((await updateRequest).postDataJSON()).toMatchObject({ protocol: 'responses', webSearchEnabled: true })
 })
+
+test('provider admin prioritizes usable connections and shows retained API keys', async ({ page }) => {
+  await page.addInitScript((user) => {
+    sessionStorage.setItem('ai_workbench_access_token', 'admin-token')
+    sessionStorage.setItem('ai_workbench_session', JSON.stringify({ user, expiresAt: '2099-01-01T00:00:00Z' }))
+  }, admin)
+  const failed = {
+    id: 'prv_failed', name: '暂不可用连接', baseUrl: 'https://failed.example/v1', defaultModel: 'model',
+    protocol: 'chat_completions', webSearchEnabled: false, models: ['model'], enabled: true, available: false,
+    lastTestedAt: '2026-08-27T12:00:00Z', lastTestLatencyMs: 0, lastTestError: 'Service temporarily unavailable', hasApiKey: true,
+    createdAt: '2026-08-26T10:00:00Z', updatedAt: '2026-08-27T12:00:00Z',
+  }
+  const usable = {
+    ...failed, id: 'prv_usable', name: '可用连接', baseUrl: 'https://usable.example/v1', available: true,
+    lastTestLatencyMs: 820, lastTestError: '', createdAt: '2026-08-26T11:00:00Z',
+  }
+  await page.route('**/api/v1/**', async (route) => {
+    const path = new URL(route.request().url()).pathname
+    let data: unknown = null
+    if (path.endsWith('/auth/me')) data = { user: admin }
+    else if (path.endsWith('/providers')) data = [failed, usable]
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 'OK', message: 'success', data }) })
+  })
+
+  await page.goto('/providers')
+  const cards = page.locator('.provider-card')
+  await expect(cards.first().getByRole('heading', { name: '可用连接' })).toBeVisible()
+  await expect(cards.nth(1).getByRole('heading', { name: '暂不可用连接' })).toBeVisible()
+  await cards.nth(1).getByRole('button', { name: '编辑' }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.getByPlaceholder('••••••••••••（已保存）')).toBeVisible()
+  await expect(dialog.getByText('原 API Key 已加密保存；连接测试失败或留空保存都不会删除它。')).toBeVisible()
+})

@@ -233,7 +233,10 @@ func (s *Service) Providers(actor identity.Actor) ([]model.Provider, error) {
 		return nil, ErrForbidden
 	}
 	var providers []model.Provider
-	if err := s.database.DB.Order("created_at ASC").Find(&providers).Error; err != nil {
+	if err := s.database.DB.
+		Order("CASE WHEN enabled = true AND available = true THEN 0 ELSE 1 END ASC").
+		Order("created_at ASC").
+		Find(&providers).Error; err != nil {
 		return nil, err
 	}
 	for index := range providers {

@@ -34,7 +34,7 @@ func main() {
 		log.Fatal(err)
 	}
 	identities := identity.New(database, cfg.PermissionAPIBaseURL, cfg.PeopleAPIBaseURL, cfg.PeopleAuthorizeURL, cfg.PeopleClientID, cfg.PeopleClientSecret, cfg.OAuthRedirectURIs)
-	service := workbench.New(database, vault, llm.New(), cfg.AttachmentDir)
+	service := workbench.New(database, vault, llm.New(), cfg.AttachmentDir, cfg.ImageToolBaseURL)
 	service.StartAttachmentCleanup(context.Background())
 	contentService := content.New(database, content.DefaultSources, cfg.XAPIBaseURL, cfg.XBearerToken, cfg.ContentRefreshPeriod, content.DailySchedule{
 		Hour: cfg.NewsRefreshHour, Location: cfg.NewsRefreshTimezone, Lookback: cfg.NewsLookback,

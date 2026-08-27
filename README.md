@@ -9,6 +9,7 @@
 - 多轮对话、系统提示词、模型切换、快速/中等/高/极高四档推理、停止生成、自动命名、搜索、置顶、重命名和删除
 - 支持 OpenAI Responses API 原生联网搜索，模型可按问题主动检索实时信息并在回答中保留来源链接
 - 图片及文件附件随单次消息发送，模型调用读取后即从服务器删除原文件
+- 证件照任务会在本地完成抠图、蓝/红/白底替换和一寸、二寸裁切，并返回 300 DPI JPG 下载
 - Markdown 回答预览、回答复制、响应延迟及 Token 用量展示
 - 个人与共享提示词库，支持分类、搜索、收藏、编辑、删除、使用次数及一键带入对话
 - 前沿项目发现，按 AI 项目、Skill 与插件检索 GitHub，并综合社区规模、活跃度与成熟度排序
@@ -61,7 +62,7 @@ npm --prefix frontend install
 
 ## Docker 与公网部署
 
-仓库根目录的 `compose.yaml` 会构建后端和 Nginx 前端。后端不直接暴露宿主机端口，Nginx 仅监听 `127.0.0.1:18082` 并将 `/api/` 同源反代到后端。后端通过仅容器可见的 `people-services` 网络访问 People edge。SQLite、上传暂存目录和内部账号保存在 `workbench-data` volume。
+仓库根目录的 `compose.yaml` 会构建后端、Nginx 前端和本地图片处理服务。后端不直接暴露宿主机端口，Nginx 仅监听 `127.0.0.1:18082` 并将 `/api/` 同源反代到后端。图片处理服务预载人像分割模型且不暴露宿主机端口，证件照原图不会发往第三方。后端通过仅容器可见的 `people-services` 网络访问 People edge。SQLite、上传暂存目录和内部账号保存在 `workbench-data` volume。
 
 ```bash
 export AI_WORKBENCH_ENCRYPTION_KEY='替换为至少 32 字符的随机值'

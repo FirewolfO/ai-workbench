@@ -1,6 +1,20 @@
 name: ai-workbench
 
 services:
+  image-tool:
+    build:
+      context: ./image-tool
+    restart: unless-stopped
+    environment:
+      U2NET_HOME: /opt/models
+      OMP_NUM_THREADS: "2"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
   model-relay:
     image: nginx:1.27-alpine
     restart: unless-stopped
@@ -16,6 +30,7 @@ services:
       AI_WORKBENCH_ADDR: :8087
       AI_WORKBENCH_DB_DSN: /data/ai-workbench.db
       AI_WORKBENCH_ATTACHMENT_DIR: /data/attachments
+      AI_WORKBENCH_IMAGE_TOOL_BASE_URL: http://image-tool:8090
       AI_WORKBENCH_ALLOWED_ORIGINS: https://ai.lxvb.top
       AI_WORKBENCH_ENCRYPTION_KEY: ${AI_WORKBENCH_ENCRYPTION_KEY:?set AI_WORKBENCH_ENCRYPTION_KEY}
       AI_WORKBENCH_PERMISSION_API_BASE_URL: ${AI_WORKBENCH_PERMISSION_API_BASE_URL:-http://host.docker.internal:8081/api/v1}
@@ -28,6 +43,9 @@ services:
       AI_WORKBENCH_GITHUB_TOKEN: ${AI_WORKBENCH_GITHUB_TOKEN:-}
     extra_hosts:
       - host.docker.internal:host-gateway
+    depends_on:
+      image-tool:
+        condition: service_healthy
     networks:
       - default
       - people-services

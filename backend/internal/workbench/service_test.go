@@ -9,6 +9,8 @@ import (
 	"image/color"
 	"image/jpeg"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"regexp"
 	"strings"
@@ -307,11 +309,13 @@ func TestRefreshAvailableModelsUpdatesStaleCatalog(t *testing.T) {
 }
 
 type captureModels struct {
-	request     llm.CompletionRequest
-	testRequest llm.ConnectionTestRequest
+	request       llm.CompletionRequest
+	testRequest   llm.ConnectionTestRequest
+	completeCalls int
 }
 
 func (models *captureModels) Complete(_ context.Context, request llm.CompletionRequest) (*llm.CompletionResult, error) {
+	models.completeCalls++
 	models.request = request
 	return &llm.CompletionResult{Content: "done", Model: request.Model}, nil
 }
@@ -441,6 +445,82 @@ func TestImageAttachmentsCanBeMergedIntoDownloadablePDF(t *testing.T) {
 		t.Fatalf("generated file header = %q, %v", header, err)
 	}
 	if record.ContentType != "application/pdf" || record.Size <= 100 || time.Until(record.ExpiresAt) < 6*24*time.Hour {
+		t.Fatalf("generated attachment = %#v", record)
+	}
+}
+
+func TestIDPhotoUsesConfirmedConversationParameters(t *testing.T) {
+	var receivedSource []byte
+	imageTool := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/v1/id-photo" {
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+		}
+		if request.URL.Query().Get("width") != "413" || request.URL.Query().Get("height") != "579" || request.URL.Query().Get("background") != "438edb" {
+			t.Fatalf("unexpected query: %s", request.URL.RawQuery)
+		}
+		var err error
+		receivedSource, err = io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		output := image.NewRGBA(image.Rect(0, 0, 413, 579))
+		var data bytes.Buffer
+		if err := jpeg.Encode(&data, output, &jpeg.Options{Quality: 85}); err != nil {
+			t.Fatal(err)
+		}
+		response.Header().Set("Content-Type", "image/jpeg")
+		_, _ = response.Write(data.Bytes())
+	}))
+	t.Cleanup(imageTool.Close)
+
+	models := &captureModels{}
+	service := testServiceWithModels(t, models)
+	service.imageToolURL = imageTool.URL
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
+	createAvailableProvider(t, service, admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	conversation, _ := service.CreateConversation(alice, ConversationInput{})
+
+	if _, err := service.SendMessage(context.Background(), alice, conversation.ID, MessageInput{Content: "帮我修改证件照"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SendMessage(context.Background(), alice, conversation.ID, MessageInput{Content: "给我一个2寸的，蓝底的"}); err != nil {
+		t.Fatal(err)
+	}
+
+	source := image.NewRGBA(image.Rect(0, 0, 800, 1000))
+	var sourceData bytes.Buffer
+	if err := jpeg.Encode(&sourceData, source, &jpeg.Options{Quality: 85}); err != nil {
+		t.Fatal(err)
+	}
+	attachment, err := service.CreateAttachment(alice, "portrait.jpg", "image/jpeg", sourceData.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer, err := service.SendMessage(context.Background(), alice, conversation.ID, MessageInput{AttachmentIDs: []string{attachment.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Model != "图片工具" || !strings.Contains(answer.Content, "二寸蓝底证件照") || !strings.Contains(answer.Content, "413 × 579 px") {
+		t.Fatalf("answer = %#v", answer)
+	}
+	if models.completeCalls != 2 || len(receivedSource) == 0 {
+		t.Fatalf("model calls = %d, image bytes = %d", models.completeCalls, len(receivedSource))
+	}
+	match := regexp.MustCompile(`/attachments/([^/]+)/download\?token=([a-f0-9]+)`).FindStringSubmatch(answer.Content)
+	if len(match) != 3 {
+		t.Fatalf("download link not found in %q", answer.Content)
+	}
+	record, file, err := service.OpenGeneratedAttachment(match[1], match[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	configuration, format, err := image.DecodeConfig(file)
+	if err != nil || format != "jpeg" || configuration.Width != 413 || configuration.Height != 579 {
+		t.Fatalf("generated image = %#v %q, %v", configuration, format, err)
+	}
+	if record.Name != "二寸蓝底证件照.jpg" || record.ContentType != "image/jpeg" {
 		t.Fatalf("generated attachment = %#v", record)
 	}
 }

@@ -11,6 +11,7 @@ type Config struct {
 	Address              string
 	DatabaseDSN          string
 	AttachmentDir        string
+	ImageToolBaseURL     string
 	AllowedOrigins       []string
 	EncryptionKey        string
 	PermissionAPIBaseURL string
@@ -36,6 +37,7 @@ func Load() Config {
 		Address:              env("AI_WORKBENCH_ADDR", ":8087"),
 		DatabaseDSN:          env("AI_WORKBENCH_DB_DSN", "ai-workbench.db"),
 		AttachmentDir:        env("AI_WORKBENCH_ATTACHMENT_DIR", "data/attachments"),
+		ImageToolBaseURL:     strings.TrimRight(env("AI_WORKBENCH_IMAGE_TOOL_BASE_URL", "http://127.0.0.1:8090"), "/"),
 		AllowedOrigins:       split(env("AI_WORKBENCH_ALLOWED_ORIGINS", "http://localhost:5181,http://127.0.0.1:5181,http://10.251.237.216:5181,http://localhost:5178,http://127.0.0.1:5178,http://10.251.237.216:5178")),
 		EncryptionKey:        env("AI_WORKBENCH_ENCRYPTION_KEY", "local-ai-workbench-encryption-key-change-me"),
 		PermissionAPIBaseURL: strings.TrimRight(env("AI_WORKBENCH_PERMISSION_API_BASE_URL", "http://127.0.0.1:8081/api/v1"), "/"),

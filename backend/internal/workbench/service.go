@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -57,13 +58,15 @@ const (
 )
 
 type Service struct {
-	database       *store.Store
-	vault          *security.Vault
-	models         llm.Client
-	attachmentDir  string
-	modelRefreshMu sync.Mutex
-	inflightMu     sync.Mutex
-	inflight       map[string]context.CancelFunc
+	database        *store.Store
+	vault           *security.Vault
+	models          llm.Client
+	attachmentDir   string
+	imageToolURL    string
+	imageHTTPClient *http.Client
+	modelRefreshMu  sync.Mutex
+	inflightMu      sync.Mutex
+	inflight        map[string]context.CancelFunc
 }
 
 type ProviderInput struct {
@@ -113,6 +116,7 @@ type messageGeneration struct {
 	provider     *model.Provider
 	messages     []llm.Message
 	content      string
+	taskContext  string
 	attachments  []consumedAttachment
 	apiKey       string
 	assistant    *model.Message
@@ -151,10 +155,17 @@ type AvailableModel struct {
 
 func New(database *store.Store, vault *security.Vault, models llm.Client, attachmentDirs ...string) *Service {
 	attachmentDir := filepath.Join(os.TempDir(), "ai-workbench-attachments")
+	imageToolURL := ""
 	if len(attachmentDirs) > 0 && strings.TrimSpace(attachmentDirs[0]) != "" {
 		attachmentDir = attachmentDirs[0]
 	}
-	service := &Service{database: database, vault: vault, models: models, attachmentDir: attachmentDir, inflight: map[string]context.CancelFunc{}}
+	if len(attachmentDirs) > 1 {
+		imageToolURL = strings.TrimRight(strings.TrimSpace(attachmentDirs[1]), "/")
+	}
+	service := &Service{
+		database: database, vault: vault, models: models, attachmentDir: attachmentDir,
+		imageToolURL: imageToolURL, imageHTTPClient: &http.Client{Timeout: 2 * time.Minute}, inflight: map[string]context.CancelFunc{},
+	}
 	_ = os.MkdirAll(attachmentDir, 0o700)
 	_ = service.cleanupExpiredAttachments()
 	_ = database.DB.Model(&model.Message{}).Where("status = ?", "generating").Updates(map[string]any{
@@ -930,6 +941,23 @@ func (s *Service) startMessage(ctx context.Context, actor identity.Actor, conver
 		}
 	}
 	messages = append(messages, llm.Message{Role: "user", Content: completionContent(content, attachments)})
+	taskContext := content
+	if len(attachments) > 0 && shouldInheritAttachmentTask(content) {
+		fragments := make([]string, 0, 9)
+		start := 0
+		if len(conversation.Messages) > 12 {
+			start = len(conversation.Messages) - 12
+		}
+		for _, message := range conversation.Messages[start:] {
+			if message.Role == "user" && message.Status == "completed" {
+				fragments = append(fragments, message.Content)
+			}
+		}
+		if content != "" {
+			fragments = append(fragments, content)
+		}
+		taskContext = strings.Join(fragments, "\n")
+	}
 	assistant := &model.Message{
 		ID: newID("msg"), ConversationID: conversation.ID, Role: "assistant", Content: "正在生成",
 		Model: conversation.Model, Status: "generating",
@@ -940,14 +968,36 @@ func (s *Service) startMessage(ctx context.Context, actor identity.Actor, conver
 	started = true
 	return &messageGeneration{
 		actor: actor, conversation: conversation, provider: provider, messages: messages, apiKey: key,
-		content: content, attachments: attachments, assistant: assistant, ctx: modelContext, cancel: cancel,
+		content: content, taskContext: taskContext, attachments: attachments, assistant: assistant, ctx: modelContext, cancel: cancel,
 	}, nil
 }
 
 func (s *Service) completeMessage(generation *messageGeneration) (*model.Message, error) {
 	defer s.endGeneration(generation.actor, generation.conversation.ID, generation.cancel)
 	startedAt := time.Now()
-	if isImagePDFTask(generation.content, generation.attachments) {
+	if specification, ok := parseIDPhotoTask(generation.taskContext, generation.attachments); ok {
+		content, err := s.createIDPhoto(generation.ctx, generation.actor, generation.attachments[0], specification)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				if saveErr := s.updateGeneratedMessage(generation.assistant, map[string]any{"content": "已停止生成", "status": "stopped"}); saveErr != nil {
+					return nil, saveErr
+				}
+				return nil, ErrCanceled
+			}
+			if saveErr := s.updateGeneratedMessage(generation.assistant, map[string]any{"content": "证件照处理失败，请确认上传的是人物清晰、格式有效的 JPG 或 PNG 原图", "status": "failed"}); saveErr != nil {
+				return nil, saveErr
+			}
+			return nil, err
+		}
+		updates := map[string]any{
+			"content": content, "model": "图片工具", "latency_ms": time.Since(startedAt).Milliseconds(), "status": "completed",
+		}
+		if err := s.updateGeneratedMessage(generation.assistant, updates); err != nil {
+			return nil, err
+		}
+		return generation.assistant, nil
+	}
+	if isImagePDFTask(generation.taskContext, generation.attachments) {
 		content, err := s.createImagePDF(generation.actor, generation.attachments)
 		if err != nil {
 			if saveErr := s.updateGeneratedMessage(generation.assistant, map[string]any{"content": "PDF 生成失败，请确认附件是有效的 JPG 或 PNG 图片", "status": "failed"}); saveErr != nil {
@@ -1240,6 +1290,133 @@ func isImagePDFTask(content string, attachments []consumedAttachment) bool {
 	return true
 }
 
+type idPhotoSpecification struct {
+	label           string
+	backgroundLabel string
+	backgroundHex   string
+	width           int
+	height          int
+	widthMM         int
+	heightMM        int
+}
+
+var idPhotoSizePattern = regexp.MustCompile(`小二寸|2寸|二寸|两寸|1寸|一寸`)
+
+func shouldInheritAttachmentTask(content string) bool {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return true
+	}
+	for _, keyword := range []string{"证件", "寸", "底", "前面", "刚才", "这个", "重新", "上传", "处理"} {
+		if strings.Contains(content, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseIDPhotoTask(content string, attachments []consumedAttachment) (idPhotoSpecification, bool) {
+	if len(attachments) != 1 {
+		return idPhotoSpecification{}, false
+	}
+	if _, _, err := image.DecodeConfig(bytes.NewReader(attachments[0].data)); err != nil {
+		return idPhotoSpecification{}, false
+	}
+
+	sizeMatches := idPhotoSizePattern.FindAllString(content, -1)
+	if len(sizeMatches) == 0 {
+		return idPhotoSpecification{}, false
+	}
+	specification := idPhotoSpecification{}
+	switch sizeMatches[len(sizeMatches)-1] {
+	case "一寸", "1寸":
+		specification.label, specification.width, specification.height = "一寸", 295, 413
+		specification.widthMM, specification.heightMM = 25, 35
+	case "小二寸":
+		specification.label, specification.width, specification.height = "小二寸", 413, 531
+		specification.widthMM, specification.heightMM = 35, 45
+	default:
+		specification.label, specification.width, specification.height = "二寸", 413, 579
+		specification.widthMM, specification.heightMM = 35, 49
+	}
+
+	type backgroundCandidate struct {
+		index int
+		label string
+		hex   string
+	}
+	selected := backgroundCandidate{index: -1}
+	for _, candidate := range []backgroundCandidate{
+		{index: lastKeywordIndex(content, "蓝底", "蓝色背景", "蓝背景"), label: "蓝底", hex: "438edb"},
+		{index: lastKeywordIndex(content, "红底", "红色背景", "红背景"), label: "红底", hex: "d81e06"},
+		{index: lastKeywordIndex(content, "白底", "白色背景", "白背景"), label: "白底", hex: "ffffff"},
+	} {
+		if candidate.index > selected.index {
+			selected = candidate
+		}
+	}
+	if selected.index < 0 {
+		return idPhotoSpecification{}, false
+	}
+	specification.backgroundLabel = selected.label
+	specification.backgroundHex = selected.hex
+	return specification, true
+}
+
+func lastKeywordIndex(content string, keywords ...string) int {
+	last := -1
+	for _, keyword := range keywords {
+		if index := strings.LastIndex(content, keyword); index > last {
+			last = index
+		}
+	}
+	return last
+}
+
+func (s *Service) createIDPhoto(ctx context.Context, actor identity.Actor, source consumedAttachment, specification idPhotoSpecification) (string, error) {
+	if s.imageToolURL == "" {
+		return "", errors.New("image tool is not configured")
+	}
+	query := url.Values{}
+	query.Set("width", fmt.Sprintf("%d", specification.width))
+	query.Set("height", fmt.Sprintf("%d", specification.height))
+	query.Set("background", specification.backgroundHex)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.imageToolURL+"/v1/id-photo?"+query.Encode(), bytes.NewReader(source.data))
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Content-Type", source.record.ContentType)
+	response, err := s.imageHTTPClient.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxGeneratedAttachmentBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("image tool returned status %d", response.StatusCode)
+	}
+	if len(data) == 0 || len(data) > maxGeneratedAttachmentBytes {
+		return "", ErrInvalid
+	}
+	configuration, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || format != "jpeg" || configuration.Width != specification.width || configuration.Height != specification.height {
+		return "", ErrInvalid
+	}
+	name := specification.label + specification.backgroundLabel + "证件照.jpg"
+	attachment, token, err := s.createDownloadableAttachment(actor, name, "image/jpeg", data)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf(
+		"已处理为%s%s证件照。\n\n[下载%s](/api/v1/attachments/%s/download?token=%s)\n\n规格：%d × %d mm · %d × %d px · 300 DPI\n\n文件将在 7 天后自动删除。",
+		specification.label, specification.backgroundLabel, name, attachment.ID, url.QueryEscape(token),
+		specification.widthMM, specification.heightMM, specification.width, specification.height,
+	), nil
+}
+
 func (s *Service) createImagePDF(actor identity.Actor, attachments []consumedAttachment) (string, error) {
 	doc := gpdf.NewDocument(
 		gpdf.WithPageSize(gpdf.A4),
@@ -1265,22 +1442,30 @@ func (s *Service) createImagePDF(actor identity.Actor, attachments []consumedAtt
 	if err != nil {
 		return "", err
 	}
-	attachment, err := s.createAttachmentFromReader(actor, "图片合并.pdf", "application/pdf", bytes.NewReader(data), maxGeneratedAttachmentBytes, generatedAttachmentTTL)
+	attachment, token, err := s.createDownloadableAttachment(actor, "图片合并.pdf", "application/pdf", data)
 	if err != nil {
 		return "", err
+	}
+	return fmt.Sprintf("已将 %d 张图片按上传顺序合并为 PDF。\n\n[下载合并后的 PDF](/api/v1/attachments/%s/download?token=%s)\n\n文件将在 7 天后自动删除。", len(attachments), attachment.ID, url.QueryEscape(token)), nil
+}
+
+func (s *Service) createDownloadableAttachment(actor identity.Actor, name, contentType string, data []byte) (*model.Attachment, string, error) {
+	attachment, err := s.createAttachmentFromReader(actor, name, contentType, bytes.NewReader(data), maxGeneratedAttachmentBytes, generatedAttachmentTTL)
+	if err != nil {
+		return nil, "", err
 	}
 	tokenBytes := make([]byte, 24)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		_ = s.DeleteAttachment(actor, attachment.ID)
-		return "", err
+		return nil, "", err
 	}
 	token := hex.EncodeToString(tokenBytes)
 	digest := sha256.Sum256([]byte(token))
 	if err := s.database.DB.Model(attachment).Update("download_token_hash", hex.EncodeToString(digest[:])).Error; err != nil {
 		_ = s.DeleteAttachment(actor, attachment.ID)
-		return "", err
+		return nil, "", err
 	}
-	return fmt.Sprintf("已将 %d 张图片按上传顺序合并为 PDF。\n\n[下载合并后的 PDF](/api/v1/attachments/%s/download?token=%s)\n\n文件将在 7 天后自动删除。", len(attachments), attachment.ID, url.QueryEscape(token)), nil
+	return attachment, token, nil
 }
 
 func (s *Service) cleanupExpiredAttachments() error {

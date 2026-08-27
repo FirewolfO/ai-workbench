@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -452,23 +453,35 @@ func TestImageAttachmentsCanBeMergedIntoDownloadablePDF(t *testing.T) {
 func TestIDPhotoUsesConfirmedConversationParameters(t *testing.T) {
 	var receivedSource []byte
 	imageTool := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost || request.URL.Path != "/v1/id-photo" {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/remove" {
 			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
 		}
-		if request.URL.Query().Get("width") != "413" || request.URL.Query().Get("height") != "579" || request.URL.Query().Get("background") != "438edb" {
-			t.Fatalf("unexpected query: %s", request.URL.RawQuery)
+		if err := request.ParseMultipartForm(maxAttachmentBytes); err != nil {
+			t.Fatal(err)
 		}
-		var err error
-		receivedSource, err = io.ReadAll(request.Body)
+		if request.FormValue("model") != "u2net_human_seg" {
+			t.Fatalf("unexpected model: %q", request.FormValue("model"))
+		}
+		file, _, err := request.FormFile("file")
 		if err != nil {
 			t.Fatal(err)
 		}
-		output := image.NewRGBA(image.Rect(0, 0, 413, 579))
-		var data bytes.Buffer
-		if err := jpeg.Encode(&data, output, &jpeg.Options{Quality: 85}); err != nil {
+		defer file.Close()
+		receivedSource, err = io.ReadAll(file)
+		if err != nil {
 			t.Fatal(err)
 		}
-		response.Header().Set("Content-Type", "image/jpeg")
+		output := image.NewNRGBA(image.Rect(0, 0, 800, 1000))
+		for y := 40; y < 1000; y++ {
+			for x := 120; x < 680; x++ {
+				output.SetNRGBA(x, y, color.NRGBA{R: 220, G: 180, B: 150, A: 255})
+			}
+		}
+		var data bytes.Buffer
+		if err := png.Encode(&data, output); err != nil {
+			t.Fatal(err)
+		}
+		response.Header().Set("Content-Type", "image/png")
 		_, _ = response.Write(data.Bytes())
 	}))
 	t.Cleanup(imageTool.Close)
@@ -516,9 +529,16 @@ func TestIDPhotoUsesConfirmedConversationParameters(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	configuration, format, err := image.DecodeConfig(file)
+	generatedData, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration, format, err := image.DecodeConfig(bytes.NewReader(generatedData))
 	if err != nil || format != "jpeg" || configuration.Width != 413 || configuration.Height != 579 {
 		t.Fatalf("generated image = %#v %q, %v", configuration, format, err)
+	}
+	if !bytes.Contains(generatedData[:min(len(generatedData), 32)], []byte{'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x01, 0x01, 0x2c, 0x01, 0x2c}) {
+		t.Fatal("generated image does not contain 300 DPI JFIF density")
 	}
 	if record.Name != "二寸蓝底证件照.jpg" || record.ContentType != "image/jpeg" {
 		t.Fatalf("generated attachment = %#v", record)

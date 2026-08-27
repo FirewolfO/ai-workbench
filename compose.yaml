@@ -2,18 +2,20 @@ name: ai-workbench
 
 services:
   image-tool:
-    build:
-      context: ./image-tool
+    image: danielgatis/rembg@sha256:941452fcbb884efa5f2e7e2457c0591e5e67016095316bf677db3fc108aa1b8e
     restart: unless-stopped
+    command: ["s", "-p", "8090", "-t", "2", "--no-ui"]
     environment:
-      U2NET_HOME: /opt/models
+      U2NET_HOME: /models
       OMP_NUM_THREADS: "2"
+    volumes:
+      - image-tool-models:/models
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/api', timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 12
-      start_period: 20s
+      start_period: 60s
 
   model-relay:
     image: nginx:1.27-alpine
@@ -70,6 +72,7 @@ services:
       - ./downloads:/usr/share/nginx/html/downloads:ro
 
 volumes:
+  image-tool-models:
   workbench-data:
 
 networks:

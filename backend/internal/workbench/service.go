@@ -11,10 +11,13 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	_ "image/jpeg"
+	"image/color"
+	stddraw "image/draw"
+	"image/jpeg"
 	_ "image/png"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -33,6 +36,7 @@ import (
 	"github.com/gpdf-dev/gpdf"
 	"github.com/gpdf-dev/gpdf/document"
 	"github.com/gpdf-dev/gpdf/template"
+	xdraw "golang.org/x/image/draw"
 	"gorm.io/gorm"
 )
 
@@ -1377,15 +1381,26 @@ func (s *Service) createIDPhoto(ctx context.Context, actor identity.Actor, sourc
 	if s.imageToolURL == "" {
 		return "", errors.New("image tool is not configured")
 	}
-	query := url.Values{}
-	query.Set("width", fmt.Sprintf("%d", specification.width))
-	query.Set("height", fmt.Sprintf("%d", specification.height))
-	query.Set("background", specification.backgroundHex)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.imageToolURL+"/v1/id-photo?"+query.Encode(), bytes.NewReader(source.data))
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	file, err := form.CreateFormFile("file", source.record.Name)
 	if err != nil {
 		return "", err
 	}
-	request.Header.Set("Content-Type", source.record.ContentType)
+	if _, err := file.Write(source.data); err != nil {
+		return "", err
+	}
+	if err := form.WriteField("model", "u2net_human_seg"); err != nil {
+		return "", err
+	}
+	if err := form.Close(); err != nil {
+		return "", err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.imageToolURL+"/api/remove", &body)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Content-Type", form.FormDataContentType())
 	response, err := s.imageHTTPClient.Do(request)
 	if err != nil {
 		return "", err
@@ -1401,9 +1416,9 @@ func (s *Service) createIDPhoto(ctx context.Context, actor identity.Actor, sourc
 	if len(data) == 0 || len(data) > maxGeneratedAttachmentBytes {
 		return "", ErrInvalid
 	}
-	configuration, format, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil || format != "jpeg" || configuration.Width != specification.width || configuration.Height != specification.height {
-		return "", ErrInvalid
+	data, err = renderIDPhoto(data, specification)
+	if err != nil {
+		return "", err
 	}
 	name := specification.label + specification.backgroundLabel + "证件照.jpg"
 	attachment, token, err := s.createDownloadableAttachment(actor, name, "image/jpeg", data)
@@ -1415,6 +1430,84 @@ func (s *Service) createIDPhoto(ctx context.Context, actor identity.Actor, sourc
 		specification.label, specification.backgroundLabel, name, attachment.ID, url.QueryEscape(token),
 		specification.widthMM, specification.heightMM, specification.width, specification.height,
 	), nil
+}
+
+func renderIDPhoto(foregroundData []byte, specification idPhotoSpecification) ([]byte, error) {
+	foreground, _, err := image.Decode(bytes.NewReader(foregroundData))
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	bounds := foreground.Bounds()
+	if bounds.Dx() < 80 || bounds.Dy() < 80 || int64(bounds.Dx())*int64(bounds.Dy()) > 25_000_000 {
+		return nil, ErrInvalid
+	}
+
+	minX, minY, maxX, maxY := bounds.Max.X, bounds.Max.Y, bounds.Min.X-1, bounds.Min.Y-1
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			alpha := color.NRGBAModel.Convert(foreground.At(x, y)).(color.NRGBA).A
+			if alpha < 12 {
+				continue
+			}
+			if x < minX {
+				minX = x
+			}
+			if x > maxX {
+				maxX = x
+			}
+			if y < minY {
+				minY = y
+			}
+			if y > maxY {
+				maxY = y
+			}
+		}
+	}
+	if maxX < minX || maxY < minY {
+		return nil, ErrInvalid
+	}
+	subjectBounds := image.Rect(minX, minY, maxX+1, maxY+1)
+	targetWidth := specification.width * 90 / 100
+	targetHeight := specification.height * 95 / 100
+	scale := min(float64(targetWidth)/float64(subjectBounds.Dx()), float64(targetHeight)/float64(subjectBounds.Dy()))
+	resizedWidth := max(1, int(float64(subjectBounds.Dx())*scale+0.5))
+	resizedHeight := max(1, int(float64(subjectBounds.Dy())*scale+0.5))
+	resized := image.NewNRGBA(image.Rect(0, 0, resizedWidth, resizedHeight))
+	xdraw.CatmullRom.Scale(resized, resized.Bounds(), foreground, subjectBounds, stddraw.Over, nil)
+
+	backgroundRGB, err := hex.DecodeString(specification.backgroundHex)
+	if err != nil || len(backgroundRGB) != 3 {
+		return nil, ErrInvalid
+	}
+	canvas := image.NewRGBA(image.Rect(0, 0, specification.width, specification.height))
+	stddraw.Draw(canvas, canvas.Bounds(), &image.Uniform{C: color.RGBA{R: backgroundRGB[0], G: backgroundRGB[1], B: backgroundRGB[2], A: 255}}, image.Point{}, stddraw.Src)
+	x := (specification.width - resizedWidth) / 2
+	y := specification.height - resizedHeight
+	minimumTop := specification.height * 25 / 1000
+	if y < minimumTop {
+		y = minimumTop
+	}
+	stddraw.Draw(canvas, image.Rect(x, y, x+resizedWidth, y+resizedHeight), resized, image.Point{}, stddraw.Over)
+
+	var output bytes.Buffer
+	if err := jpeg.Encode(&output, canvas, &jpeg.Options{Quality: 95}); err != nil {
+		return nil, err
+	}
+	return withJPEGDensity(output.Bytes(), 300), nil
+}
+
+func withJPEGDensity(data []byte, dpi uint16) []byte {
+	if len(data) < 2 || data[0] != 0xff || data[1] != 0xd8 {
+		return data
+	}
+	segment := []byte{
+		0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x01,
+		byte(dpi >> 8), byte(dpi), byte(dpi >> 8), byte(dpi), 0x00, 0x00,
+	}
+	result := make([]byte, 0, len(data)+len(segment))
+	result = append(result, data[:2]...)
+	result = append(result, segment...)
+	return append(result, data[2:]...)
 }
 
 func (s *Service) createImagePDF(actor identity.Actor, attachments []consumedAttachment) (string, error) {

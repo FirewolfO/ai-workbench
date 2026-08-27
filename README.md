@@ -62,7 +62,7 @@ npm --prefix frontend install
 
 ## Docker 与公网部署
 
-仓库根目录的 `compose.yaml` 会构建后端、Nginx 前端和本地图片处理服务。后端不直接暴露宿主机端口，Nginx 仅监听 `127.0.0.1:18082` 并将 `/api/` 同源反代到后端。图片处理服务预载人像分割模型且不暴露宿主机端口，证件照原图不会发往第三方。后端通过仅容器可见的 `people-services` 网络访问 People edge。SQLite、上传暂存目录和内部账号保存在 `workbench-data` volume。
+仓库根目录的 `compose.yaml` 会构建后端和 Nginx 前端，并运行固定版本的本地图片处理服务。后端不直接暴露宿主机端口，Nginx 仅监听 `127.0.0.1:18082` 并将 `/api/` 同源反代到后端。图片处理服务不暴露宿主机端口，人像分割模型缓存在独立 volume 中，证件照原图不会发往第三方。后端通过仅容器可见的 `people-services` 网络访问 People edge。SQLite、上传暂存目录和内部账号保存在 `workbench-data` volume。
 
 ```bash
 export AI_WORKBENCH_ENCRYPTION_KEY='替换为至少 32 字符的随机值'

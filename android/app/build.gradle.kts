@@ -10,8 +10,8 @@ android {
         applicationId = "shop.lxvb.aiworkbench"
         minSdk = 35
         targetSdk = 36
-        versionCode = 11
-        versionName = "1.1.9"
+        versionCode = 12
+        versionName = "1.1.10"
         buildConfigField("String", "APP_CENTER_URL", "\"https://apps.lxvb.top\"")
     }
 

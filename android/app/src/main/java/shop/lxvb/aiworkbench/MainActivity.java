@@ -54,6 +54,8 @@ import java.util.concurrent.Executors;
 public final class MainActivity extends Activity {
     private static final String TAG = "AIWorkbench";
     private static final String APP_URL = "https://ai.lxvb.top";
+    private static final String WEB_CACHE_PREFERENCES = "web_cache";
+    private static final String WEB_CACHE_VERSION = "version";
     static final String UPDATE_PREFERENCES = "app_update";
     static final String UPDATE_DOWNLOAD_ID = "update_download_id";
     static final String UPDATE_READY_ID = "update_ready_id";
@@ -75,6 +77,7 @@ public final class MainActivity extends Activity {
     private long lastUpdateCheckAt;
     private String promptedVersion = "";
     private String updateStatus = "idle";
+    private boolean webCacheRefreshed;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -109,8 +112,8 @@ public final class MainActivity extends Activity {
         }
         getOnBackInvokedDispatcher().registerOnBackInvokedCallback(0, this::handleBack);
 
-        if (savedInstanceState == null) {
-            webView.loadUrl(APP_URL);
+        if (savedInstanceState == null || webCacheRefreshed) {
+            webView.loadUrl(versionedAppURL());
         } else {
             webView.restoreState(savedInstanceState);
         }
@@ -169,7 +172,10 @@ public final class MainActivity extends Activity {
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(true);
         settings.setSupportZoom(false);
+        settings.setCacheMode(WebSettings.LOAD_DEFAULT);
         settings.setUserAgentString(settings.getUserAgentString() + " AIWorkbenchAndroid/" + BuildConfig.VERSION_NAME);
+
+        webCacheRefreshed = refreshWebCacheForVersion();
 
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false);
@@ -178,6 +184,22 @@ public final class MainActivity extends Activity {
         webView.setWebViewClient(new WorkbenchWebViewClient());
         webView.setWebChromeClient(new WorkbenchChromeClient());
         webView.setDownloadListener(this::download);
+    }
+
+    private boolean refreshWebCacheForVersion() {
+        String cachedVersion = getSharedPreferences(WEB_CACHE_PREFERENCES, MODE_PRIVATE)
+                .getString(WEB_CACHE_VERSION, "");
+        if (BuildConfig.VERSION_NAME.equals(cachedVersion)) return false;
+        webView.clearCache(true);
+        getSharedPreferences(WEB_CACHE_PREFERENCES, MODE_PRIVATE)
+                .edit()
+                .putString(WEB_CACHE_VERSION, BuildConfig.VERSION_NAME)
+                .apply();
+        return true;
+    }
+
+    private String versionedAppURL() {
+        return APP_URL + "/?nativeVersion=" + Uri.encode(BuildConfig.VERSION_NAME);
     }
 
     private void handleBack() {

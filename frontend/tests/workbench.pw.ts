@@ -76,8 +76,9 @@ test('attachments upload concurrently with independent progress', async ({ page 
   })
   await page.goto('/chat/cnv_demo')
   const input = page.locator('input[type="file"]')
-  await input.setInputFiles({ name: 'first-plan.txt', mimeType: 'text/plain', buffer: Buffer.from('first') })
-  await expect(page.getByText('first-plan.txt')).toBeVisible()
+  await input.setInputFiles({ name: 'abe_power.xml', mimeType: 'text/xml', buffer: Buffer.from('<power />') })
+  await expect(page.getByText('abe_power.xml')).toBeVisible()
+  await expect(page.locator('.attachment-type-icon.is-code')).toHaveText('CODE')
   await input.setInputFiles([
     { name: 'second-plan.txt', mimeType: 'text/plain', buffer: Buffer.from('second') },
     { name: 'third-plan.txt', mimeType: 'text/plain', buffer: Buffer.from('third') },
@@ -99,6 +100,10 @@ test('attachments upload concurrently with independent progress', async ({ page 
   await expect(page.locator('.attachment-chip.is-ready')).toHaveCount(3, { timeout: 3_000 })
   await expect(page.locator('.attachment-trigger.is-ready')).toBeVisible()
   await expect(page.locator('.attachment-chip').filter({ hasText: '完成' })).toHaveCount(3)
+  const firstChip = page.locator('.attachment-chip').first()
+  const nameBox = await firstChip.locator('.attachment-name').boundingBox()
+  const statusBox = await firstChip.locator('.attachment-status-group').boundingBox()
+  expect(nameBox && statusBox && statusBox.x > nameBox.x).toBe(true)
   if (testInfo.project.name === 'mobile') await page.screenshot({ path: '../.runtime/screenshots/attachment-ready-mobile.png', fullPage: true })
   await expect(page.getByRole('button', { name: '发送消息' })).toBeEnabled()
 })

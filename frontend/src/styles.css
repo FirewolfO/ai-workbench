@@ -172,12 +172,25 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
 .attachment-chip.is-ready::before { background: #c7e3db; }
 .attachment-chip.is-failed { border-color: #e5b8af; color: #a74434; }
 .attachment-chip.is-failed::before { background: #f7e5e1; }
-.attachment-list b { overflow: hidden; min-width: 44px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-list .attachment-name { overflow: hidden; min-width: 44px; flex: 1 1 auto; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-upload-preview { width: 32px; height: 32px; flex: 0 0 32px; border-radius: 4px; object-fit: cover; background: #dfe6e3; }
+.attachment-type-icon { position: relative; display: grid; place-items: end center; width: 28px; height: 32px; flex: 0 0 28px; padding-bottom: 4px; border: 1.5px solid currentColor; border-radius: 4px; color: #697772; background: rgba(255, 255, 255, .78); overflow: hidden; }
+.attachment-type-icon::before { position: absolute; top: -1px; right: -1px; width: 9px; height: 9px; border-bottom: 1px solid currentColor; border-left: 1px solid currentColor; background: #f4f6f5; content: ""; }
+.attachment-type-icon small { max-width: 100%; font-size: 7px; font-weight: 800; line-height: 1; letter-spacing: -.2px; }
+.attachment-type-icon.is-pdf { color: #c24c42; background: #fff2ef; }
+.attachment-type-icon.is-word { color: #3971b7; background: #eef5ff; }
+.attachment-type-icon.is-sheet { color: #2f805b; background: #edf9f2; }
+.attachment-type-icon.is-slides { color: #c36a32; background: #fff4ea; }
+.attachment-type-icon.is-archive { color: #9a7323; background: #fff8df; }
+.attachment-type-icon.is-code { color: #7654a6; background: #f5f0ff; }
+.attachment-type-icon.is-audio { color: #b14f82; background: #fff0f7; }
+.attachment-type-icon.is-video { color: #48659b; background: #eff3fb; }
+.attachment-type-icon.is-text { color: #61726d; background: #f3f6f5; }
+.attachment-status-group { display: inline-flex; align-items: center; justify-content: flex-end; flex: 0 0 auto; gap: 4px; margin-left: auto; }
 .attachment-list .attachment-status { flex: 0 0 auto; color: #397967; font-size: 10px; font-weight: 650; }
+.attachment-status-group small.attachment-status { min-width: 34px; text-align: right; white-space: nowrap; }
 .attachment-list .is-failed .attachment-status { color: #b54836; }
 .attachment-list button { display: grid; place-items: center; width: 20px; height: 20px; flex: 0 0 20px; padding: 0; border: 0; color: #7a8582; background: transparent; cursor: pointer; }
-.attachment-file-icon { flex: 0 0 auto; color: #397967; }
 .spinning { animation: attachment-spin .9s linear infinite; }
 .attachment-trigger { transition: color .18s ease, background-color .18s ease; }
 .attachment-trigger.is-uploading { color: #8a6618; background: #f6edcf; }
@@ -292,6 +305,8 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
   .attachment-list { display: grid; grid-template-columns: minmax(0, 1fr); max-height: 148px; overflow-x: hidden; overflow-y: auto; padding-bottom: 7px; }
   .attachment-list .attachment-chip { width: 100%; max-width: none; min-height: 34px; padding: 6px 8px; }
   .attachment-upload-preview { width: 38px; height: 38px; flex-basis: 38px; }
+  .attachment-type-icon { width: 34px; height: 38px; flex-basis: 34px; padding-bottom: 5px; }
+  .attachment-type-icon small { font-size: 8px; }
   .attachment-list button { width: 26px; height: 26px; flex-basis: 26px; }
   .composer-tools { display: block; }
   .composer-actions { display: grid; grid-template-columns: 32px 32px minmax(0, 1fr); width: 100%; gap: 4px; }

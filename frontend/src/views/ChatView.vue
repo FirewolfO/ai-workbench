@@ -4,9 +4,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { ChatLineRound, CircleCheck, Close, CopyDocument, Delete, Edit, Expand, Loading, MagicStick, MoreFilled, Paperclip, Plus, Promotion, Refresh, Search, Setting, Star, StarFilled, VideoPause, WarningFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiMessage, workbenchApi } from '@/api'
-import { filesFromClipboard, isImagePreview } from '@/utils/attachments'
+import { attachmentFileIcon, filesFromClipboard, isImagePreview } from '@/utils/attachments'
 import { renderMarkdown } from '@/utils/markdown'
 import { useAuthStore } from '@/stores/auth'
+import type { AttachmentFileIcon } from '@/utils/attachments'
 import type { Attachment, AvailableModel, Conversation, Message, MessageAttachment, Prompt, ReasoningEffort } from '@/types'
 
 const route = useRoute()
@@ -33,6 +34,7 @@ interface AttachmentUpload {
   error: string
   retryable: boolean
   previewUrl: string
+  fileIcon: AttachmentFileIcon
   attachment?: Attachment
   controller?: AbortController
 }
@@ -308,6 +310,7 @@ function addFiles(files: File[]) {
       error: oversized ? '文件超过 8 MiB' : '',
       retryable: !oversized,
       previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : '',
+      fileIcon: attachmentFileIcon(file.name, file.type),
     })
     attachmentUploads.value.push(item)
   }
@@ -469,11 +472,17 @@ onBeforeUnmount(() => {
         <footer class="composer">
           <div v-if="attachmentUploads.length" class="attachment-list" aria-live="polite">
             <span v-for="item in attachmentUploads" :key="item.localId" class="attachment-chip" :class="[`is-${item.status}`, { 'has-preview': item.previewUrl }]" :style="{ '--upload-progress': `${item.progress}%` }" :title="item.error || item.name">
-              <img v-if="item.previewUrl" class="attachment-upload-preview" :src="item.previewUrl" alt="" /><el-icon class="attachment-file-icon" :class="{ spinning: item.status === 'uploading' }"><Loading v-if="item.status === 'uploading'" /><Paperclip v-else /></el-icon><b>{{ item.name }}</b>
-              <el-icon v-if="item.status === 'ready'" class="attachment-status"><CircleCheck /></el-icon>
-              <small class="attachment-status">{{ uploadStatusLabel(item) }}</small>
-              <button v-if="item.status === 'failed' && item.retryable" type="button" :aria-label="`重试 ${item.name}`" @click="retryAttachment(item)"><el-icon><Refresh /></el-icon></button>
-              <button type="button" :aria-label="`移除 ${item.name}`" @click="removeAttachment(item)"><el-icon><Close /></el-icon></button>
+              <img v-if="item.previewUrl" class="attachment-upload-preview" :src="item.previewUrl" alt="" />
+              <span v-else class="attachment-type-icon" :class="`is-${item.fileIcon.kind}`" :title="item.fileIcon.title" aria-hidden="true"><small>{{ item.fileIcon.label }}</small></span>
+              <b class="attachment-name">{{ item.name }}</b>
+              <span class="attachment-status-group">
+                <el-icon v-if="item.status === 'ready'" class="attachment-status"><CircleCheck /></el-icon>
+                <el-icon v-else-if="item.status === 'failed'" class="attachment-status"><WarningFilled /></el-icon>
+                <el-icon v-else class="attachment-status spinning"><Loading /></el-icon>
+                <small class="attachment-status">{{ uploadStatusLabel(item) }}</small>
+                <button v-if="item.status === 'failed' && item.retryable" type="button" :aria-label="`重试 ${item.name}`" @click="retryAttachment(item)"><el-icon><Refresh /></el-icon></button>
+                <button type="button" :aria-label="`移除 ${item.name}`" @click="removeAttachment(item)"><el-icon><Close /></el-icon></button>
+              </span>
             </span>
           </div>
           <el-input v-model="draft" type="textarea" resize="none" :autosize="{ minRows: 2, maxRows: 7 }" maxlength="20000" placeholder="输入消息" @paste="pasteAttachments" @keydown.enter.exact.prevent="send" />

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -29,6 +30,14 @@ type ImageURL struct {
 	URL string `json:"url"`
 }
 
+type ToolDefinition struct {
+	Name        string
+	Description string
+	Parameters  map[string]any
+}
+
+type ToolHandler func(context.Context, string, json.RawMessage) (string, error)
+
 type CompletionRequest struct {
 	BaseURL         string
 	APIKey          string
@@ -39,6 +48,8 @@ type CompletionRequest struct {
 	Messages        []Message
 	Temperature     float64
 	ReasoningEffort string
+	Tools           []ToolDefinition
+	ToolHandler     ToolHandler
 }
 
 type CompletionResult struct {
@@ -88,64 +99,97 @@ func (c *HTTPClient) completeChat(ctx context.Context, input CompletionRequest) 
 	if err != nil {
 		return nil, err
 	}
-	requestPayload := map[string]any{"model": input.Model, "messages": input.Messages}
+	messages := make([]any, 0, len(input.Messages)+8)
+	for _, message := range input.Messages {
+		messages = append(messages, message)
+	}
+	requestPayload := map[string]any{"model": input.Model}
 	if effort := providerReasoningEffort(input.ReasoningEffort); effort != "" {
 		requestPayload["reasoning_effort"] = effort
 	} else {
 		requestPayload["temperature"] = input.Temperature
 	}
-	body, err := json.Marshal(requestPayload)
-	if err != nil {
-		return nil, err
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	if strings.TrimSpace(input.APIKey) != "" {
-		request.Header.Set("Authorization", "Bearer "+input.APIKey)
+	if len(input.Tools) > 0 {
+		requestPayload["tools"] = chatTools(input.Tools)
+		requestPayload["tool_choice"] = "auto"
 	}
 	started := time.Now()
-	response, err := c.client.Do(request)
-	latency := time.Since(started)
-	if err != nil {
-		return nil, fmt.Errorf("模型服务连接失败: %w", err)
+	promptTokens, completionTokens := 0, 0
+	modelName := ""
+	for round := 0; round < 5; round++ {
+		requestPayload["messages"] = messages
+		var responsePayload chatCompletionResponse
+		if err := c.postJSON(ctx, target, input.APIKey, requestPayload, &responsePayload, "请检查 Base URL 是否指向 API 根路径（通常以 /v1 结尾）"); err != nil {
+			if round == 0 && len(input.Tools) > 0 && isUnsupportedToolError(err) {
+				delete(requestPayload, "tools")
+				delete(requestPayload, "tool_choice")
+				continue
+			}
+			return nil, err
+		}
+		if len(responsePayload.Choices) == 0 {
+			return nil, fmt.Errorf("模型服务返回了无效响应")
+		}
+		promptTokens += responsePayload.Usage.PromptTokens
+		completionTokens += responsePayload.Usage.CompletionTokens
+		if strings.TrimSpace(responsePayload.Model) != "" {
+			modelName = responsePayload.Model
+		}
+		answer := responsePayload.Choices[0].Message
+		if len(answer.ToolCalls) == 0 {
+			if strings.TrimSpace(answer.Content) == "" {
+				return nil, fmt.Errorf("模型服务返回了无效响应")
+			}
+			return &CompletionResult{Content: answer.Content, Model: modelName, PromptTokens: promptTokens, CompletionTokens: completionTokens, Latency: time.Since(started)}, nil
+		}
+		if input.ToolHandler == nil {
+			return nil, fmt.Errorf("模型请求了未配置的后台工具")
+		}
+		messages = append(messages, answer)
+		for _, call := range answer.ToolCalls {
+			output, toolErr := input.ToolHandler(ctx, call.Function.Name, json.RawMessage(call.Function.Arguments))
+			if toolErr != nil {
+				output = toolErrorOutput(toolErr)
+			}
+			messages = append(messages, map[string]any{"role": "tool", "tool_call_id": call.ID, "content": output})
+		}
 	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		message, _ := io.ReadAll(io.LimitReader(response.Body, 2048))
-		return nil, fmt.Errorf("模型服务返回 %d: %s", response.StatusCode, providerMessage(message))
-	}
-	if !isJSON(response.Header.Get("Content-Type")) {
-		return nil, fmt.Errorf("模型服务返回 %s 而不是 JSON，请检查 Base URL 是否指向 API 根路径（通常以 /v1 结尾）", contentType(response.Header.Get("Content-Type")))
-	}
-	var responsePayload struct {
-		Model   string `json:"model"`
-		Choices []struct {
-			Message struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&responsePayload); err != nil || len(responsePayload.Choices) == 0 || strings.TrimSpace(responsePayload.Choices[0].Message.Content) == "" {
-		return nil, fmt.Errorf("模型服务返回了无效响应")
-	}
-	return &CompletionResult{
-		Content: responsePayload.Choices[0].Message.Content, Model: responsePayload.Model,
-		PromptTokens: responsePayload.Usage.PromptTokens, CompletionTokens: responsePayload.Usage.CompletionTokens, Latency: latency,
-	}, nil
+	return nil, fmt.Errorf("模型工具调用次数超过限制")
+}
+
+type chatToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+type chatAssistantMessage struct {
+	Role      string         `json:"role"`
+	Content   string         `json:"content,omitempty"`
+	ToolCalls []chatToolCall `json:"tool_calls,omitempty"`
+}
+
+type chatCompletionResponse struct {
+	Model   string `json:"model"`
+	Choices []struct {
+		Message chatAssistantMessage `json:"message"`
+	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
 }
 
 type responsesOutputItem struct {
-	Type   string `json:"type"`
-	Status string `json:"status"`
-	Action struct {
+	Type      string `json:"type"`
+	Status    string `json:"status"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+	Action    struct {
 		Sources []struct {
 			URL   string `json:"url"`
 			Title string `json:"title"`
@@ -168,73 +212,210 @@ func (c *HTTPClient) completeResponses(ctx context.Context, input CompletionRequ
 	if err != nil {
 		return nil, err
 	}
-	requestPayload := map[string]any{
-		"model": input.Model, "input": responseMessages(input.Messages), "store": false,
+	inputItems := make([]any, 0, len(input.Messages)+8)
+	for _, message := range responseMessages(input.Messages) {
+		inputItems = append(inputItems, message)
 	}
+	requestPayload := map[string]any{"model": input.Model, "store": false}
 	if effort := providerReasoningEffort(input.ReasoningEffort); effort != "" {
 		requestPayload["reasoning"] = map[string]string{"effort": effort}
 	}
+	tools := responseTools(input.Tools)
 	if input.WebSearch {
-		requestPayload["tools"] = []map[string]string{{"type": "web_search"}}
+		tools = append([]map[string]any{{"type": "web_search"}}, tools...)
+	}
+	if len(tools) > 0 {
+		requestPayload["tools"] = tools
 		requestPayload["tool_choice"] = "auto"
-		requestPayload["include"] = []string{"web_search_call.action.sources"}
+		include := []string{"reasoning.encrypted_content"}
+		if input.WebSearch {
+			include = append(include, "web_search_call.action.sources")
+		}
+		requestPayload["include"] = include
 		if input.RequireTool {
 			requestPayload["tool_choice"] = "required"
 		}
 	}
-	body, err := json.Marshal(requestPayload)
+	started := time.Now()
+	promptTokens, completionTokens := 0, 0
+	modelName := ""
+	allSources := make([]responseSource, 0)
+	usedWebSearch := false
+	droppedEncryptedReasoning := false
+	droppedFunctions := false
+	for round := 0; round < 5; round++ {
+		requestPayload["input"] = inputItems
+		var responsePayload struct {
+			Model  string            `json:"model"`
+			Status string            `json:"status"`
+			Output []json.RawMessage `json:"output"`
+			Error  *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+			Usage struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if err := c.postJSON(ctx, target, input.APIKey, requestPayload, &responsePayload, "请检查 Base URL 是否指向 Responses API 根路径"); err != nil {
+			if !droppedEncryptedReasoning && isUnsupportedEncryptedReasoning(err) {
+				droppedEncryptedReasoning = true
+				if input.WebSearch {
+					requestPayload["include"] = []string{"web_search_call.action.sources"}
+				} else {
+					delete(requestPayload, "include")
+				}
+				continue
+			}
+			if !droppedFunctions && len(input.Tools) > 0 && isUnsupportedToolError(err) {
+				droppedFunctions = true
+				if input.WebSearch {
+					requestPayload["tools"] = []map[string]any{{"type": "web_search"}}
+				} else {
+					delete(requestPayload, "tools")
+					delete(requestPayload, "tool_choice")
+				}
+				continue
+			}
+			return nil, err
+		}
+		if responsePayload.Error != nil && strings.TrimSpace(responsePayload.Error.Message) != "" {
+			return nil, fmt.Errorf("模型服务返回错误: %s", responsePayload.Error.Message)
+		}
+		promptTokens += responsePayload.Usage.InputTokens
+		completionTokens += responsePayload.Usage.OutputTokens
+		if strings.TrimSpace(responsePayload.Model) != "" {
+			modelName = responsePayload.Model
+		}
+		output := make([]responsesOutputItem, 0, len(responsePayload.Output))
+		for _, raw := range responsePayload.Output {
+			var item responsesOutputItem
+			if err := json.Unmarshal(raw, &item); err != nil {
+				return nil, fmt.Errorf("模型服务返回了无效响应")
+			}
+			output = append(output, item)
+		}
+		content, sources, searched := responseOutput(output)
+		allSources = append(allSources, sources...)
+		usedWebSearch = usedWebSearch || searched
+		calls := responseFunctionCalls(output)
+		if len(calls) == 0 {
+			if strings.TrimSpace(content) == "" {
+				return nil, fmt.Errorf("模型服务返回了无效响应")
+			}
+			return &CompletionResult{
+				Content: appendSources(content, allSources), Model: modelName, PromptTokens: promptTokens,
+				CompletionTokens: completionTokens, Latency: time.Since(started), UsedWebSearch: usedWebSearch,
+			}, nil
+		}
+		if input.ToolHandler == nil {
+			return nil, fmt.Errorf("模型请求了未配置的后台工具")
+		}
+		for _, raw := range responsePayload.Output {
+			inputItems = append(inputItems, raw)
+		}
+		for _, call := range calls {
+			output, toolErr := input.ToolHandler(ctx, call.Name, json.RawMessage(call.Arguments))
+			if toolErr != nil {
+				output = toolErrorOutput(toolErr)
+			}
+			inputItems = append(inputItems, map[string]any{"type": "function_call_output", "call_id": call.CallID, "output": output})
+		}
+	}
+	return nil, fmt.Errorf("模型工具调用次数超过限制")
+}
+
+func chatTools(definitions []ToolDefinition) []map[string]any {
+	result := make([]map[string]any, 0, len(definitions))
+	for _, definition := range definitions {
+		result = append(result, map[string]any{"type": "function", "function": map[string]any{
+			"name": definition.Name, "description": definition.Description, "parameters": definition.Parameters,
+		}})
+	}
+	return result
+}
+
+func responseTools(definitions []ToolDefinition) []map[string]any {
+	result := make([]map[string]any, 0, len(definitions))
+	for _, definition := range definitions {
+		result = append(result, map[string]any{
+			"type": "function", "name": definition.Name, "description": definition.Description, "parameters": definition.Parameters,
+		})
+	}
+	return result
+}
+
+func responseFunctionCalls(output []responsesOutputItem) []responsesOutputItem {
+	result := make([]responsesOutputItem, 0)
+	for _, item := range output {
+		if item.Type == "function_call" && strings.TrimSpace(item.CallID) != "" && strings.TrimSpace(item.Name) != "" {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func toolErrorOutput(err error) string {
+	value, _ := json.Marshal(map[string]string{"error": err.Error()})
+	return string(value)
+}
+
+type modelServiceError struct {
+	status  int
+	message string
+}
+
+func (e *modelServiceError) Error() string {
+	return fmt.Sprintf("模型服务返回 %d: %s", e.status, e.message)
+}
+
+func isUnsupportedToolError(err error) bool {
+	var serviceError *modelServiceError
+	if !errors.As(err, &serviceError) || (serviceError.status != http.StatusBadRequest && serviceError.status != http.StatusUnprocessableEntity) {
+		return false
+	}
+	message := strings.ToLower(serviceError.message)
+	return strings.Contains(message, "tool") || strings.Contains(message, "function")
+}
+
+func isUnsupportedEncryptedReasoning(err error) bool {
+	var serviceError *modelServiceError
+	if !errors.As(err, &serviceError) || (serviceError.status != http.StatusBadRequest && serviceError.status != http.StatusUnprocessableEntity) {
+		return false
+	}
+	message := strings.ToLower(serviceError.message)
+	return strings.Contains(message, "reasoning.encrypted_content") || (strings.Contains(message, "include") && strings.Contains(message, "reasoning"))
+}
+
+func (c *HTTPClient) postJSON(ctx context.Context, target, apiKey string, payload any, result any, hint string) error {
+	body, err := json.Marshal(payload)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	if strings.TrimSpace(input.APIKey) != "" {
-		request.Header.Set("Authorization", "Bearer "+input.APIKey)
+	if strings.TrimSpace(apiKey) != "" {
+		request.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	started := time.Now()
 	response, err := c.client.Do(request)
-	latency := time.Since(started)
 	if err != nil {
-		return nil, fmt.Errorf("模型服务连接失败: %w", err)
+		return fmt.Errorf("模型服务连接失败: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 2048))
-		return nil, fmt.Errorf("模型服务返回 %d: %s", response.StatusCode, providerMessage(message))
+		return &modelServiceError{status: response.StatusCode, message: providerMessage(message)}
 	}
 	if !isJSON(response.Header.Get("Content-Type")) {
-		return nil, fmt.Errorf("模型服务返回 %s 而不是 JSON，请检查 Base URL 是否指向 Responses API 根路径", contentType(response.Header.Get("Content-Type")))
+		return fmt.Errorf("模型服务返回 %s 而不是 JSON，%s", contentType(response.Header.Get("Content-Type")), hint)
 	}
-	var responsePayload struct {
-		Model  string                `json:"model"`
-		Status string                `json:"status"`
-		Output []responsesOutputItem `json:"output"`
-		Error  *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
+	if err := json.NewDecoder(response.Body).Decode(result); err != nil {
+		return fmt.Errorf("模型服务返回了无效响应")
 	}
-	if err := json.NewDecoder(response.Body).Decode(&responsePayload); err != nil {
-		return nil, fmt.Errorf("模型服务返回了无效响应")
-	}
-	if responsePayload.Error != nil && strings.TrimSpace(responsePayload.Error.Message) != "" {
-		return nil, fmt.Errorf("模型服务返回错误: %s", responsePayload.Error.Message)
-	}
-	content, sources, usedWebSearch := responseOutput(responsePayload.Output)
-	if strings.TrimSpace(content) == "" {
-		return nil, fmt.Errorf("模型服务返回了无效响应")
-	}
-	return &CompletionResult{
-		Content: appendSources(content, sources), Model: responsePayload.Model,
-		PromptTokens: responsePayload.Usage.InputTokens, CompletionTokens: responsePayload.Usage.OutputTokens,
-		Latency: latency, UsedWebSearch: usedWebSearch,
-	}, nil
+	return nil
 }
 
 func responseMessages(messages []Message) []map[string]any {

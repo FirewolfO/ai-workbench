@@ -62,18 +62,24 @@ type Conversation struct {
 }
 
 type Message struct {
-	ID               string    `gorm:"primaryKey;size:40" json:"id"`
-	ConversationID   string    `gorm:"size:40;index;not null" json:"conversationId"`
-	Role             string    `gorm:"size:20;not null" json:"role"`
-	Content          string    `gorm:"type:text;not null" json:"content"`
-	Model            string    `gorm:"size:160" json:"model,omitempty"`
-	PromptTokens     int       `gorm:"not null;default:0" json:"promptTokens"`
-	CompletionTokens int       `gorm:"not null;default:0" json:"completionTokens"`
-	LatencyMs        int64     `gorm:"not null;default:0" json:"latencyMs"`
-	Status           string    `gorm:"size:20;not null;default:completed" json:"status"`
-	AttachmentNames  string    `gorm:"type:text" json:"-"`
-	Attachments      []string  `gorm:"-" json:"attachments,omitempty"`
-	CreatedAt        time.Time `gorm:"index" json:"createdAt"`
+	ID               string              `gorm:"primaryKey;size:40" json:"id"`
+	ConversationID   string              `gorm:"size:40;index;not null" json:"conversationId"`
+	Role             string              `gorm:"size:20;not null" json:"role"`
+	Content          string              `gorm:"type:text;not null" json:"content"`
+	Model            string              `gorm:"size:160" json:"model,omitempty"`
+	PromptTokens     int                 `gorm:"not null;default:0" json:"promptTokens"`
+	CompletionTokens int                 `gorm:"not null;default:0" json:"completionTokens"`
+	LatencyMs        int64               `gorm:"not null;default:0" json:"latencyMs"`
+	Status           string              `gorm:"size:20;not null;default:completed" json:"status"`
+	AttachmentNames  string              `gorm:"type:text" json:"-"`
+	Attachments      []MessageAttachment `gorm:"-" json:"attachments,omitempty"`
+	CreatedAt        time.Time           `gorm:"index" json:"createdAt"`
+}
+
+type MessageAttachment struct {
+	Name        string `json:"name"`
+	ContentType string `json:"contentType"`
+	PreviewURL  string `json:"previewUrl,omitempty"`
 }
 
 type Session struct {

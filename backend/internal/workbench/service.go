@@ -17,6 +17,7 @@ import (
 	_ "image/png"
 	"io"
 	"log"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -27,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"ai-workbench/internal/assistanttools"
 	"ai-workbench/internal/identity"
 	"ai-workbench/internal/llm"
 	"ai-workbench/internal/model"
@@ -65,6 +67,7 @@ type Service struct {
 	database        *store.Store
 	vault           *security.Vault
 	models          llm.Client
+	assistantTools  *assistanttools.Service
 	attachmentDir   string
 	imageToolURL    string
 	imageHTTPClient *http.Client
@@ -168,7 +171,8 @@ func New(database *store.Store, vault *security.Vault, models llm.Client, attach
 	}
 	service := &Service{
 		database: database, vault: vault, models: models, attachmentDir: attachmentDir,
-		imageToolURL: imageToolURL, imageHTTPClient: &http.Client{Timeout: 2 * time.Minute}, inflight: map[string]context.CancelFunc{},
+		assistantTools: assistanttools.New(), imageToolURL: imageToolURL,
+		imageHTTPClient: &http.Client{Timeout: 2 * time.Minute}, inflight: map[string]context.CancelFunc{},
 	}
 	_ = os.MkdirAll(attachmentDir, 0o700)
 	_ = service.cleanupExpiredAttachments()
@@ -910,16 +914,17 @@ func (s *Service) startMessage(ctx context.Context, actor identity.Actor, conver
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(attachments))
-	for _, attachment := range attachments {
-		names = append(names, attachment.record.Name)
+	messageAttachments := describeAttachments(attachments)
+	names := make([]string, 0, len(messageAttachments))
+	for _, attachment := range messageAttachments {
+		names = append(names, attachment.Name)
 	}
 	storedContent := content
 	if storedContent == "" {
 		storedContent = "请处理附件：" + strings.Join(names, "、")
 	}
-	namesJSON, _ := json.Marshal(names)
-	userMessage := &model.Message{ID: newID("msg"), ConversationID: conversation.ID, Role: "user", Content: storedContent, Status: "completed", AttachmentNames: string(namesJSON), Attachments: names}
+	attachmentsJSON, _ := json.Marshal(messageAttachments)
+	userMessage := &model.Message{ID: newID("msg"), ConversationID: conversation.ID, Role: "user", Content: storedContent, Status: "completed", AttachmentNames: string(attachmentsJSON), Attachments: messageAttachments}
 	if err := s.database.DB.Create(userMessage).Error; err != nil {
 		return nil, err
 	}
@@ -1020,6 +1025,7 @@ func (s *Service) completeMessage(generation *messageGeneration) (*model.Message
 	result, err := s.models.Complete(generation.ctx, llm.CompletionRequest{
 		BaseURL: generation.provider.BaseURL, APIKey: generation.apiKey, Model: generation.conversation.Model, Protocol: generation.provider.Protocol,
 		WebSearch: generation.provider.WebSearchEnabled, Messages: generation.messages, Temperature: 0.7, ReasoningEffort: generation.conversation.ReasoningEffort,
+		Tools: s.assistantTools.Definitions(), ToolHandler: s.assistantTools.Execute,
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -1205,6 +1211,44 @@ func (s *Service) DeleteAttachment(actor identity.Actor, id string) error {
 type consumedAttachment struct {
 	record model.Attachment
 	data   []byte
+}
+
+func describeAttachments(attachments []consumedAttachment) []model.MessageAttachment {
+	result := make([]model.MessageAttachment, 0, len(attachments))
+	for _, attachment := range attachments {
+		item := model.MessageAttachment{Name: attachment.record.Name, ContentType: attachment.record.ContentType}
+		if strings.HasPrefix(attachment.record.ContentType, "image/") {
+			item.PreviewURL = attachmentPreview(attachment.data)
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+func attachmentPreview(data []byte) string {
+	configuration, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || configuration.Width < 1 || configuration.Height < 1 || int64(configuration.Width)*int64(configuration.Height) > 40_000_000 {
+		return ""
+	}
+	source, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return ""
+	}
+	width, height := configuration.Width, configuration.Height
+	const maxDimension = 320
+	if width > maxDimension || height > maxDimension {
+		scale := math.Min(float64(maxDimension)/float64(width), float64(maxDimension)/float64(height))
+		width = max(1, int(math.Round(float64(width)*scale)))
+		height = max(1, int(math.Round(float64(height)*scale)))
+	}
+	preview := image.NewNRGBA(image.Rect(0, 0, width, height))
+	stddraw.Draw(preview, preview.Bounds(), &image.Uniform{C: color.White}, image.Point{}, stddraw.Src)
+	xdraw.CatmullRom.Scale(preview, preview.Bounds(), source, source.Bounds(), stddraw.Over, nil)
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, preview, &jpeg.Options{Quality: 72}); err != nil {
+		return ""
+	}
+	return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(encoded.Bytes())
 }
 
 func (s *Service) consumeAttachments(actor identity.Actor, ids []string) ([]consumedAttachment, error) {
@@ -1634,10 +1678,20 @@ func normalizeProviderProtocol(value string) string {
 	}
 }
 
-func attachmentNames(value string) []string {
-	var names []string
-	_ = json.Unmarshal([]byte(value), &names)
-	return names
+func attachmentNames(value string) []model.MessageAttachment {
+	var attachments []model.MessageAttachment
+	if json.Unmarshal([]byte(value), &attachments) == nil {
+		return attachments
+	}
+	var legacyNames []string
+	if json.Unmarshal([]byte(value), &legacyNames) != nil {
+		return nil
+	}
+	attachments = make([]model.MessageAttachment, 0, len(legacyNames))
+	for _, name := range legacyNames {
+		attachments = append(attachments, model.MessageAttachment{Name: name})
+	}
+	return attachments
 }
 
 func generationKey(actor identity.Actor, conversationID string) string {

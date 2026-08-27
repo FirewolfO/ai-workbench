@@ -4,7 +4,7 @@ const conversation = {
   id: 'cnv_demo', title: '发布方案评审', providerId: 'prv_demo', model: 'company-model', systemPrompt: '你是一名严谨的技术评审人。', reasoningEffort: 'medium', pinned: true,
   createdAt: '2026-08-11T10:00:00Z', updatedAt: '2026-08-11T11:00:00Z', messageCount: 2, lastMessage: '建议先补齐回滚和监控方案。',
   messages: [
-    { id: 'msg_1', conversationId: 'cnv_demo', role: 'user', content: '帮我评审这份发布方案。', promptTokens: 0, completionTokens: 0, latencyMs: 0, status: 'completed', createdAt: '2026-08-11T10:00:00Z' },
+    { id: 'msg_1', conversationId: 'cnv_demo', role: 'user', content: '帮我评审这份发布方案。', attachments: [{ name: '发布架构图.png', contentType: 'image/png', previewUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' }], promptTokens: 0, completionTokens: 0, latencyMs: 0, status: 'completed', createdAt: '2026-08-11T10:00:00Z' },
     { id: 'msg_2', conversationId: 'cnv_demo', role: 'assistant', content: '## 评审结论\n\n建议先补齐回滚和监控方案。', model: 'company-model', promptTokens: 42, completionTokens: 18, latencyMs: 860, status: 'completed', createdAt: '2026-08-11T10:00:03Z' },
   ],
 }
@@ -103,6 +103,30 @@ test('attachments upload concurrently with independent progress', async ({ page 
   await expect(page.getByRole('button', { name: '发送消息' })).toBeEnabled()
 })
 
+test('pasted image enters the upload queue with a thumbnail', async ({ page }, testInfo) => {
+  await page.goto('/chat/cnv_demo')
+  await page.getByPlaceholder('输入消息').evaluate(async (element) => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 160
+    canvas.height = 100
+    const context = canvas.getContext('2d')!
+    context.fillStyle = '#176b55'
+    context.fillRect(0, 0, 160, 100)
+    context.fillStyle = '#ffffff'
+    context.font = 'bold 22px sans-serif'
+    context.fillText('PASTE', 42, 58)
+    const blob = await new Promise<Blob>((resolve) => canvas.toBlob((value) => resolve(value!), 'image/png'))
+    const clipboard = new DataTransfer()
+    clipboard.items.add(new File([blob], 'image.png', { type: 'image/png' }))
+    element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: clipboard, bubbles: true, cancelable: true }))
+  })
+  await expect(page.locator('.attachment-chip')).toContainText('粘贴图片-')
+  await expect(page.locator('.attachment-upload-preview')).toBeVisible()
+  await expect(page.locator('.attachment-trigger.is-uploading')).toBeVisible()
+  if (testInfo.project.name === 'mobile') await page.screenshot({ path: '../.runtime/screenshots/attachment-paste-mobile.png', fullPage: true })
+  await expect(page.locator('.attachment-chip.is-ready')).toBeVisible({ timeout: 3_000 })
+})
+
 test('oversized attachments stay visible with a reason', async ({ page }) => {
   await page.goto('/chat/cnv_demo')
   await page.locator('input[type="file"]').setInputFiles({
@@ -186,6 +210,7 @@ test('conversation workspace is usable without overflow', async ({ page }, testI
   await expect(page.getByRole('heading', { name: '发布方案评审' })).toBeVisible()
   await expect(page.getByPlaceholder('输入消息')).toBeVisible()
   await expect(page.getByText('评审结论')).toBeVisible()
+  await expect(page.getByAltText('发布架构图.png')).toBeVisible()
   await expect(page.getByRole('combobox', { name: '供应商' })).toBeVisible()
   await expect(page.getByRole('combobox', { name: '模型' })).toBeVisible()
   const effortSelect = page.locator('.composer-effort')

@@ -4,9 +4,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { ChatLineRound, CircleCheck, Close, CopyDocument, Delete, Edit, Expand, Loading, MagicStick, MoreFilled, Paperclip, Plus, Promotion, Refresh, Search, Setting, Star, StarFilled, VideoPause, WarningFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiMessage, workbenchApi } from '@/api'
+import { filesFromClipboard, isImagePreview } from '@/utils/attachments'
 import { renderMarkdown } from '@/utils/markdown'
 import { useAuthStore } from '@/stores/auth'
-import type { Attachment, AvailableModel, Conversation, Message, Prompt, ReasoningEffort } from '@/types'
+import type { Attachment, AvailableModel, Conversation, Message, MessageAttachment, Prompt, ReasoningEffort } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -31,6 +32,7 @@ interface AttachmentUpload {
   status: UploadStatus
   error: string
   retryable: boolean
+  previewUrl: string
   attachment?: Attachment
   controller?: AbortController
 }
@@ -157,9 +159,12 @@ async function send() {
   const content = draft.value.trim()
   if (!canSend.value || !current.value) return
   const conversationID = current.value.id
-  const pendingAttachments = [...readyAttachments.value]
+  const pendingUploads = attachmentUploads.value.filter((item) => item.attachment)
+  const pendingAttachments = pendingUploads.flatMap((item) => item.attachment ? [item.attachment] : [])
+  const sentPreviewURLs = pendingUploads.flatMap((item) => item.previewUrl ? [item.previewUrl] : [])
   const optimisticContent = content || `请处理附件：${pendingAttachments.map((item) => item.name).join('、')}`
-  const optimistic: Message = { id: `local-${Date.now()}`, conversationId: conversationID, role: 'user', content: optimisticContent, attachments: pendingAttachments.map((item) => item.name), promptTokens: 0, completionTokens: 0, latencyMs: 0, status: 'completed', createdAt: new Date().toISOString() }
+  const optimisticAttachments: MessageAttachment[] = pendingUploads.map((item) => ({ name: item.name, contentType: item.file.type, previewUrl: item.previewUrl }))
+  const optimistic: Message = { id: `local-${Date.now()}`, conversationId: conversationID, role: 'user', content: optimisticContent, attachments: optimisticAttachments, promptTokens: 0, completionTokens: 0, latencyMs: 0, status: 'completed', createdAt: new Date().toISOString() }
   current.value.messages ||= []
   current.value.messages.push(optimistic)
   draft.value = ''
@@ -176,7 +181,10 @@ async function send() {
     stopping.value = false
     ElMessage.error(apiMessage(error, '模型响应失败'))
     current.value = await workbenchApi.conversation(conversationID)
-  } finally { await scrollToEnd() }
+  } finally {
+    for (const previewURL of sentPreviewURLs) URL.revokeObjectURL(previewURL)
+    await scrollToEnd()
+  }
 }
 
 async function trackGeneration(conversationID: string, messageID: string) {
@@ -276,6 +284,15 @@ function selectFiles(event: Event) {
   const input = event.target as HTMLInputElement
   const files = Array.from(input.files || [])
   input.value = ''
+  addFiles(files)
+}
+function pasteAttachments(event: ClipboardEvent) {
+  const files = filesFromClipboard(event.clipboardData)
+  if (!files.length) return
+  event.preventDefault()
+  addFiles(files)
+}
+function addFiles(files: File[]) {
   const availableSlots = 4 - attachmentUploads.value.length
   if (availableSlots <= 0) { ElMessage.warning('每次最多上传 4 个附件'); return }
   const accepted = files.slice(0, availableSlots)
@@ -290,6 +307,7 @@ function selectFiles(event: Event) {
       status: oversized ? 'failed' : 'queued',
       error: oversized ? '文件超过 8 MiB' : '',
       retryable: !oversized,
+      previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : '',
     })
     attachmentUploads.value.push(item)
   }
@@ -351,6 +369,7 @@ function openFilePicker() {
 function removeAttachment(item: AttachmentUpload) {
   item.controller?.abort()
   attachmentUploads.value = attachmentUploads.value.filter((candidate) => candidate.localId !== item.localId)
+  if (item.previewUrl) URL.revokeObjectURL(item.previewUrl)
   if (item.attachment) void workbenchApi.deleteAttachment(item.attachment.id).catch((error) => ElMessage.error(apiMessage(error, '附件删除失败')))
   pumpUploads()
 }
@@ -359,8 +378,12 @@ function clearUnusedAttachments() {
   attachmentUploads.value = []
   for (const item of unused) {
     item.controller?.abort()
+    if (item.previewUrl) URL.revokeObjectURL(item.previewUrl)
     if (item.attachment) void workbenchApi.deleteAttachment(item.attachment.id).catch(() => undefined)
   }
+}
+function canPreviewAttachment(attachment: MessageAttachment) {
+  return isImagePreview(attachment.contentType, attachment.previewUrl || '')
 }
 async function scrollToEnd() { await nextTick(); if (thread.value) thread.value.scrollTop = thread.value.scrollHeight }
 async function selectPrompt(item: Prompt) { await workbenchApi.usePrompt(item.id); draft.value = item.content; promptOpen.value = false; await nextTick() }
@@ -439,21 +462,21 @@ onBeforeUnmount(() => {
           <div v-if="!displayMessages.length" class="chat-empty"><span class="brand-symbol">AI</span><h3>从一个问题开始</h3><p>{{ current.systemPrompt || '选择提示词，或直接输入你想处理的事情。' }}</p></div>
           <article v-for="message in displayMessages" :key="message.id" class="message-row" :class="message.role">
             <span class="message-avatar">{{ message.role === 'user' ? '我' : 'AI' }}</span>
-            <div class="message-body"><header><strong>{{ message.role === 'user' ? '我' : message.model || '助手' }}</strong><el-button v-if="message.role === 'assistant' && message.status === 'completed'" text :icon="CopyDocument" aria-label="复制回答" @click="copy(message.content)" /></header><div v-if="message.role === 'assistant'" class="markdown-body" :class="{ failed: message.status !== 'completed' }" v-html="renderMarkdown(message.content)"></div><template v-else><p>{{ message.content }}</p><div v-if="message.attachments?.length" class="message-attachments"><span v-for="name in message.attachments" :key="name"><el-icon><Paperclip /></el-icon>{{ name }}</span></div></template><small v-if="message.role === 'assistant' && message.status === 'completed'">{{ message.latencyMs }} ms · {{ message.promptTokens + message.completionTokens }} tokens</small></div>
+            <div class="message-body"><header><strong>{{ message.role === 'user' ? '我' : message.model || '助手' }}</strong><el-button v-if="message.role === 'assistant' && message.status === 'completed'" text :icon="CopyDocument" aria-label="复制回答" @click="copy(message.content)" /></header><div v-if="message.role === 'assistant'" class="markdown-body" :class="{ failed: message.status !== 'completed' }" v-html="renderMarkdown(message.content)"></div><template v-else><p>{{ message.content }}</p><div v-if="message.attachments?.length" class="message-attachments"><figure v-for="(attachment, index) in message.attachments" :key="`${attachment.name}-${index}`" :class="{ 'is-image': canPreviewAttachment(attachment) }"><el-image v-if="canPreviewAttachment(attachment)" :src="attachment.previewUrl" :preview-src-list="[attachment.previewUrl || '']" :alt="attachment.name" fit="cover" preview-teleported /><span><el-icon><Paperclip /></el-icon><b>{{ attachment.name }}</b></span></figure></div></template><small v-if="message.role === 'assistant' && message.status === 'completed'">{{ message.latencyMs }} ms · {{ message.promptTokens + message.completionTokens }} tokens</small></div>
           </article>
           <article v-if="sending" class="message-row assistant"><span class="message-avatar">AI</span><div class="message-body thinking"><i></i><i></i><i></i><span>{{ stopping ? '正在停止' : '正在生成' }}</span></div></article>
         </div>
         <footer class="composer">
           <div v-if="attachmentUploads.length" class="attachment-list" aria-live="polite">
-            <span v-for="item in attachmentUploads" :key="item.localId" class="attachment-chip" :class="`is-${item.status}`" :style="{ '--upload-progress': `${item.progress}%` }" :title="item.error || item.name">
-              <el-icon class="attachment-file-icon" :class="{ spinning: item.status === 'uploading' }"><Loading v-if="item.status === 'uploading'" /><Paperclip v-else /></el-icon><b>{{ item.name }}</b>
+            <span v-for="item in attachmentUploads" :key="item.localId" class="attachment-chip" :class="[`is-${item.status}`, { 'has-preview': item.previewUrl }]" :style="{ '--upload-progress': `${item.progress}%` }" :title="item.error || item.name">
+              <img v-if="item.previewUrl" class="attachment-upload-preview" :src="item.previewUrl" alt="" /><el-icon class="attachment-file-icon" :class="{ spinning: item.status === 'uploading' }"><Loading v-if="item.status === 'uploading'" /><Paperclip v-else /></el-icon><b>{{ item.name }}</b>
               <el-icon v-if="item.status === 'ready'" class="attachment-status"><CircleCheck /></el-icon>
               <small class="attachment-status">{{ uploadStatusLabel(item) }}</small>
               <button v-if="item.status === 'failed' && item.retryable" type="button" :aria-label="`重试 ${item.name}`" @click="retryAttachment(item)"><el-icon><Refresh /></el-icon></button>
               <button type="button" :aria-label="`移除 ${item.name}`" @click="removeAttachment(item)"><el-icon><Close /></el-icon></button>
             </span>
           </div>
-          <el-input v-model="draft" type="textarea" resize="none" :autosize="{ minRows: 2, maxRows: 7 }" maxlength="20000" placeholder="输入消息" @keydown.enter.exact.prevent="send" />
+          <el-input v-model="draft" type="textarea" resize="none" :autosize="{ minRows: 2, maxRows: 7 }" maxlength="20000" placeholder="输入消息" @paste="pasteAttachments" @keydown.enter.exact.prevent="send" />
           <div class="composer-tools">
             <div class="composer-actions">
               <el-button class="attachment-trigger" :class="`is-${uploadButtonState}`" text aria-label="选择附件" @click="openFilePicker">

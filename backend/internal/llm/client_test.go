@@ -111,6 +111,116 @@ func TestResponsesConvertsImageInput(t *testing.T) {
 	}
 }
 
+func TestResponsesExecutesBackendFunctionTool(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests++
+		var input struct {
+			Input []map[string]any `json:"input"`
+			Tools []map[string]any `json:"tools"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			if len(input.Tools) != 1 || input.Tools[0]["name"] != "get_weather" {
+				t.Fatalf("tools = %#v", input.Tools)
+			}
+			_, _ = writer.Write([]byte(`{"model":"model","output":[{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"location\":\"武汉\"}"}],"usage":{"input_tokens":4,"output_tokens":2}}`))
+			return
+		}
+		last := input.Input[len(input.Input)-1]
+		if last["type"] != "function_call_output" || last["call_id"] != "call_1" || !strings.Contains(last["output"].(string), "32") {
+			t.Fatalf("tool output = %#v", last)
+		}
+		_, _ = writer.Write([]byte(`{"model":"model","output":[{"type":"message","content":[{"type":"output_text","text":"武汉现在 32°C"}]}],"usage":{"input_tokens":7,"output_tokens":3}}`))
+	}))
+	defer server.Close()
+
+	called := false
+	result, err := New().Complete(context.Background(), CompletionRequest{
+		BaseURL: server.URL, Model: "model", Protocol: "responses", Messages: []Message{{Role: "user", Content: "武汉天气"}},
+		Tools: []ToolDefinition{{Name: "get_weather", Description: "weather", Parameters: map[string]any{"type": "object"}}},
+		ToolHandler: func(_ context.Context, name string, arguments json.RawMessage) (string, error) {
+			called = name == "get_weather" && strings.Contains(string(arguments), "武汉")
+			return `{"temperature":32}`, nil
+		},
+	})
+	if err != nil || !called || requests != 2 || result.PromptTokens != 11 || result.CompletionTokens != 5 || result.Content != "武汉现在 32°C" {
+		t.Fatalf("Complete() = %#v, called=%v requests=%d err=%v", result, called, requests, err)
+	}
+}
+
+func TestChatCompletionsExecutesBackendFunctionTool(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests++
+		var input struct {
+			Messages []map[string]any `json:"messages"`
+			Tools    []map[string]any `json:"tools"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			function := input.Tools[0]["function"].(map[string]any)
+			if function["name"] != "calculate" {
+				t.Fatalf("tools = %#v", input.Tools)
+			}
+			_, _ = writer.Write([]byte(`{"model":"model","choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_2","type":"function","function":{"name":"calculate","arguments":"{\"expression\":\"6*7\"}"}}]}}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`))
+			return
+		}
+		last := input.Messages[len(input.Messages)-1]
+		if last["role"] != "tool" || last["tool_call_id"] != "call_2" || !strings.Contains(last["content"].(string), "42") {
+			t.Fatalf("tool message = %#v", last)
+		}
+		_, _ = writer.Write([]byte(`{"model":"model","choices":[{"message":{"role":"assistant","content":"答案是 42"}}],"usage":{"prompt_tokens":5,"completion_tokens":3}}`))
+	}))
+	defer server.Close()
+
+	result, err := New().Complete(context.Background(), CompletionRequest{
+		BaseURL: server.URL, Model: "model", Messages: []Message{{Role: "user", Content: "6*7"}},
+		Tools:       []ToolDefinition{{Name: "calculate", Description: "calculator", Parameters: map[string]any{"type": "object"}}},
+		ToolHandler: func(_ context.Context, _ string, _ json.RawMessage) (string, error) { return `{"result":42}`, nil },
+	})
+	if err != nil || requests != 2 || result.Content != "答案是 42" || result.PromptTokens != 8 || result.CompletionTokens != 5 {
+		t.Fatalf("Complete() = %#v requests=%d err=%v", result, requests, err)
+	}
+}
+
+func TestChatCompletionsFallsBackWhenGatewayRejectsTools(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests++
+		var input map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			writer.WriteHeader(http.StatusBadRequest)
+			_, _ = writer.Write([]byte(`{"error":{"message":"tools are not supported by this model"}}`))
+			return
+		}
+		if _, exists := input["tools"]; exists {
+			t.Fatalf("fallback still contains tools: %#v", input)
+		}
+		_, _ = writer.Write([]byte(`{"model":"legacy-model","choices":[{"message":{"role":"assistant","content":"普通回答"}}]}`))
+	}))
+	defer server.Close()
+
+	result, err := New().Complete(context.Background(), CompletionRequest{
+		BaseURL: server.URL, Model: "legacy-model", Messages: []Message{{Role: "user", Content: "你好"}},
+		Tools:       []ToolDefinition{{Name: "calculate", Parameters: map[string]any{"type": "object"}}},
+		ToolHandler: func(_ context.Context, _ string, _ json.RawMessage) (string, error) { return "", nil },
+	})
+	if err != nil || requests != 2 || result.Content != "普通回答" {
+		t.Fatalf("Complete() = %#v requests=%d err=%v", result, requests, err)
+	}
+}
+
 func TestEndpointValidation(t *testing.T) {
 	for _, value := range []string{"", "ftp://example.com/v1", "https://user@example.com/v1"} {
 		if _, err := endpoint(value, "models"); err == nil {

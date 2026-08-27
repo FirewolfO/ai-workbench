@@ -162,7 +162,7 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
 .send-button { position: absolute; right: 11px; bottom: 11px; }
 .file-input { display: none; }
 .attachment-list { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 6px; }
-.attachment-list > span, .message-attachments span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 260px; padding: 4px 6px; border-radius: 5px; color: #53615d; background: #edf1f0; font-size: 11px; }
+.attachment-list > span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 300px; padding: 4px 6px; border-radius: 5px; color: #53615d; background: #edf1f0; font-size: 11px; }
 .attachment-list .attachment-chip { position: relative; isolation: isolate; overflow: hidden; min-height: 29px; padding: 5px 6px; border: 1px solid #dce4e1; background: #f4f6f5; }
 .attachment-chip::before { position: absolute; z-index: -1; inset: 0 auto 0 0; width: max(3px, var(--upload-progress)); background: #a9d8ca; content: ""; transition: width .18s ease; }
 .attachment-chip.is-queued { border-color: #d8dfdd; color: #6b7673; }
@@ -173,6 +173,7 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
 .attachment-chip.is-failed { border-color: #e5b8af; color: #a74434; }
 .attachment-chip.is-failed::before { background: #f7e5e1; }
 .attachment-list b { overflow: hidden; min-width: 44px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-upload-preview { width: 32px; height: 32px; flex: 0 0 32px; border-radius: 4px; object-fit: cover; background: #dfe6e3; }
 .attachment-list .attachment-status { flex: 0 0 auto; color: #397967; font-size: 10px; font-weight: 650; }
 .attachment-list .is-failed .attachment-status { color: #b54836; }
 .attachment-list button { display: grid; place-items: center; width: 20px; height: 20px; flex: 0 0 20px; padding: 0; border: 0; color: #7a8582; background: transparent; cursor: pointer; }
@@ -185,7 +186,13 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
 .attachment-trigger.is-ready:hover, .attachment-trigger.is-ready:focus { color: #fff; background: #1e6653; }
 .attachment-trigger.is-failed:hover, .attachment-trigger.is-failed:focus { color: #fff; background: #993b2c; }
 @keyframes attachment-spin { to { transform: rotate(360deg); } }
-.message-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.message-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
+.message-attachments figure { display: inline-flex; align-items: center; min-width: 0; max-width: 260px; margin: 0; border: 1px solid #dce4e1; border-radius: 6px; color: #53615d; background: #edf1f0; font-size: 11px; overflow: hidden; }
+.message-attachments figure > span { display: inline-flex; align-items: center; min-width: 0; gap: 5px; padding: 5px 7px; }
+.message-attachments figure b { overflow: hidden; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.message-attachments figure.is-image { display: grid; width: 176px; max-width: 100%; background: #f7f9f8; }
+.message-attachments figure.is-image .el-image { width: 100%; height: 116px; cursor: zoom-in; background: #e4e9e7; }
+.message-attachments figure.is-image > span { border-top: 1px solid #dce4e1; }
 .thinking span { margin-left: 4px; color: #7a8582; font-size: 11px; }
 .chat-empty, .workspace-empty { display: grid; place-items: center; align-content: center; height: 100%; text-align: center; }
 .workspace-empty { flex: 1; min-height: 0; height: auto; }
@@ -284,6 +291,7 @@ button, input, textarea { font: inherit; letter-spacing: 0; }
   .composer { width: calc(100% - 20px); margin-bottom: 10px; box-shadow: 0 4px 16px rgba(24, 40, 36, .08); }
   .attachment-list { display: grid; grid-template-columns: minmax(0, 1fr); max-height: 148px; overflow-x: hidden; overflow-y: auto; padding-bottom: 7px; }
   .attachment-list .attachment-chip { width: 100%; max-width: none; min-height: 34px; padding: 6px 8px; }
+  .attachment-upload-preview { width: 38px; height: 38px; flex-basis: 38px; }
   .attachment-list button { width: 26px; height: 26px; flex-basis: 26px; }
   .composer-tools { display: block; }
   .composer-actions { display: grid; grid-template-columns: 32px 32px minmax(0, 1fr); width: 100%; gap: 4px; }

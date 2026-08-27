@@ -3,6 +3,7 @@ package workbench
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"image"
@@ -387,8 +388,54 @@ func TestAttachmentIsConsumedAndDeletedAfterMessage(t *testing.T) {
 		t.Fatalf("attachment rows = %d, %v", count, err)
 	}
 	loaded, _ := service.Conversation(alice, conversation.ID)
-	if len(loaded.Messages) != 2 || len(loaded.Messages[0].Attachments) != 1 || loaded.Messages[0].Attachments[0] != "notes.txt" {
+	if len(loaded.Messages) != 2 || len(loaded.Messages[0].Attachments) != 1 || loaded.Messages[0].Attachments[0].Name != "notes.txt" || loaded.Messages[0].Attachments[0].PreviewURL != "" {
 		t.Fatalf("stored attachment metadata = %#v", loaded.Messages)
+	}
+}
+
+func TestImageAttachmentStoresThumbnailButDeletesOriginal(t *testing.T) {
+	models := &captureModels{}
+	service := testServiceWithModels(t, models)
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
+	createAvailableProvider(t, service, admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	conversation, _ := service.CreateConversation(alice, ConversationInput{})
+
+	picture := image.NewRGBA(image.Rect(0, 0, 900, 600))
+	for y := 0; y < 600; y++ {
+		for x := 0; x < 900; x++ {
+			picture.SetRGBA(x, y, color.RGBA{R: uint8(x % 255), G: uint8(y % 255), B: 120, A: 255})
+		}
+	}
+	var data bytes.Buffer
+	if err := jpeg.Encode(&data, picture, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+	attachment, err := service.CreateAttachment(alice, "photo.jpg", "image/jpeg", data.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SendMessage(context.Background(), alice, conversation.ID, MessageInput{Content: "描述图片", AttachmentIDs: []string{attachment.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(attachment.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("original image was not deleted: %v", err)
+	}
+	loaded, err := service.Conversation(alice, conversation.ID)
+	if err != nil || len(loaded.Messages[0].Attachments) != 1 {
+		t.Fatalf("conversation = %#v, %v", loaded, err)
+	}
+	preview := loaded.Messages[0].Attachments[0]
+	if preview.Name != "photo.jpg" || preview.ContentType != "image/jpeg" || !strings.HasPrefix(preview.PreviewURL, "data:image/jpeg;base64,") {
+		t.Fatalf("preview metadata = %#v", preview)
+	}
+	thumbnailData, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(preview.PreviewURL, "data:image/jpeg;base64,"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration, _, err := image.DecodeConfig(bytes.NewReader(thumbnailData))
+	if err != nil || configuration.Width != 320 || configuration.Height != 213 {
+		t.Fatalf("thumbnail = %#v, %v", configuration, err)
 	}
 }
 

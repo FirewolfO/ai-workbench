@@ -55,8 +55,14 @@ export interface Message {
   completionTokens: number
   latencyMs: number
   status: 'generating' | 'completed' | 'failed' | 'stopped'
-  attachments?: string[]
+  attachments?: MessageAttachment[]
   createdAt: string
+}
+
+export interface MessageAttachment {
+  name: string
+  contentType: string
+  previewUrl?: string
 }
 
 export interface Conversation {

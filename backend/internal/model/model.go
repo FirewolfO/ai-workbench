@@ -106,6 +106,8 @@ type InternalUser struct {
 type Attachment struct {
 	ID                string    `gorm:"primaryKey;size:40" json:"id"`
 	OwnerID           string    `gorm:"size:120;index;not null" json:"-"`
+	ConversationID    string    `gorm:"size:40;index;not null;default:''" json:"-"`
+	MessageID         string    `gorm:"size:40;index;not null;default:''" json:"-"`
 	Name              string    `gorm:"size:255;not null" json:"name"`
 	ContentType       string    `gorm:"size:120;not null" json:"contentType"`
 	Path              string    `gorm:"size:1000;not null" json:"-"`

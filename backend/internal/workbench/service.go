@@ -56,6 +56,7 @@ const (
 	maxAttachmentBytes          = 8 << 20
 	maxGeneratedAttachmentBytes = 40 << 20
 	attachmentTTL               = time.Hour
+	conversationImageTTL        = 30 * 24 * time.Hour
 	generatedAttachmentTTL      = 7 * 24 * time.Hour
 	modelCatalogRefreshInterval = 5 * time.Minute
 	asyncGenerationTimeout      = 4 * time.Minute
@@ -855,7 +856,25 @@ func (s *Service) DeleteConversation(actor identity.Actor, id string) error {
 	if err != nil {
 		return err
 	}
-	return s.database.DB.Delete(conversation).Error
+	var attachments []model.Attachment
+	err = s.database.DB.Transaction(func(transaction *gorm.DB) error {
+		if err := transaction.Where("owner_id = ? AND conversation_id = ?", ownerID(actor), conversation.ID).Find(&attachments).Error; err != nil {
+			return err
+		}
+		if len(attachments) > 0 {
+			if err := transaction.Where("owner_id = ? AND conversation_id = ?", ownerID(actor), conversation.ID).Delete(&model.Attachment{}).Error; err != nil {
+				return err
+			}
+		}
+		return transaction.Delete(conversation).Error
+	})
+	if err != nil {
+		return err
+	}
+	for _, attachment := range attachments {
+		_ = os.Remove(attachment.Path)
+	}
+	return nil
 }
 
 func (s *Service) SendMessage(ctx context.Context, actor identity.Actor, conversationID string, input MessageInput) (*model.Message, error) {
@@ -910,11 +929,19 @@ func (s *Service) startMessage(ctx context.Context, actor identity.Actor, conver
 			s.endGeneration(actor, conversation.ID, cancel)
 		}
 	}()
-	attachments, err := s.consumeAttachments(actor, input.AttachmentIDs)
+	userMessageID := newID("msg")
+	attachments, err := s.consumeAttachments(actor, input.AttachmentIDs, conversation.ID, userMessageID)
 	if err != nil {
 		return nil, err
 	}
+	explicitAttachments := len(attachments) > 0
 	messageAttachments := describeAttachments(attachments)
+	if !explicitAttachments && shouldReuseConversationImages(content) {
+		attachments, err = s.recentConversationImages(actor, conversation.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	names := make([]string, 0, len(messageAttachments))
 	for _, attachment := range messageAttachments {
 		names = append(names, attachment.Name)
@@ -924,7 +951,7 @@ func (s *Service) startMessage(ctx context.Context, actor identity.Actor, conver
 		storedContent = "请处理附件：" + strings.Join(names, "、")
 	}
 	attachmentsJSON, _ := json.Marshal(messageAttachments)
-	userMessage := &model.Message{ID: newID("msg"), ConversationID: conversation.ID, Role: "user", Content: storedContent, Status: "completed", AttachmentNames: string(attachmentsJSON), Attachments: messageAttachments}
+	userMessage := &model.Message{ID: userMessageID, ConversationID: conversation.ID, Role: "user", Content: storedContent, Status: "completed", AttachmentNames: string(attachmentsJSON), Attachments: messageAttachments}
 	if err := s.database.DB.Create(userMessage).Error; err != nil {
 		return nil, err
 	}
@@ -1000,6 +1027,26 @@ func (s *Service) completeMessage(generation *messageGeneration) (*model.Message
 		}
 		updates := map[string]any{
 			"content": content, "model": "图片工具", "latency_ms": time.Since(startedAt).Milliseconds(), "status": "completed",
+		}
+		if err := s.updateGeneratedMessage(generation.assistant, updates); err != nil {
+			return nil, err
+		}
+		return generation.assistant, nil
+	}
+	if isIDPhotoIntent(generation.taskContext, generation.attachments) {
+		updates := map[string]any{
+			"content": "原图已保留。请告诉我证件照的尺寸（一寸、小二寸或二寸）和底色（蓝底、红底或白底）。\n\n例如直接回复：`二寸蓝底`。确认后会生成可下载的 JPG，无需重新上传原图。",
+			"model":   "图片工具", "latency_ms": time.Since(startedAt).Milliseconds(), "status": "completed",
+		}
+		if err := s.updateGeneratedMessage(generation.assistant, updates); err != nil {
+			return nil, err
+		}
+		return generation.assistant, nil
+	}
+	if len(generation.attachments) == 0 && hasConversationImageHistory(generation.conversation) && referencesConversationImage(generation.content) {
+		updates := map[string]any{
+			"content": "当前对话里没有可继续处理的原图。请重新上传一次 JPG 或 PNG 原图；上传后原图会在当前对话中保留 30 天，后续修改尺寸或底色都无需再次上传。",
+			"model":   "图片工具", "latency_ms": time.Since(startedAt).Milliseconds(), "status": "completed",
 		}
 		if err := s.updateGeneratedMessage(generation.assistant, updates); err != nil {
 			return nil, err
@@ -1146,7 +1193,11 @@ func (s *Service) createAttachmentFromReader(actor identity.Actor, name, content
 	if size == 0 || size > maxBytes {
 		return nil, ErrInvalid
 	}
-	if contentType = strings.TrimSpace(strings.Split(contentType, ";")[0]); contentType == "" {
+	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	if contentType == "image/jpg" || contentType == "image/pjpeg" {
+		contentType = "image/jpeg"
+	}
+	if contentType == "" || contentType == "application/octet-stream" || contentType == "binary/octet-stream" || contentType == "image/*" {
 		file, err := os.Open(temporaryPath)
 		if err != nil {
 			return nil, err
@@ -1251,7 +1302,7 @@ func attachmentPreview(data []byte) string {
 	return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(encoded.Bytes())
 }
 
-func (s *Service) consumeAttachments(actor identity.Actor, ids []string) ([]consumedAttachment, error) {
+func (s *Service) consumeAttachments(actor identity.Actor, ids []string, conversationID, messageID string) ([]consumedAttachment, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -1264,7 +1315,10 @@ func (s *Service) consumeAttachments(actor identity.Actor, ids []string) ([]cons
 		unique[id] = true
 	}
 	var records []model.Attachment
-	if err := s.database.DB.Where("id IN ? AND owner_id = ? AND expires_at > ?", ids, ownerID(actor), time.Now().UTC()).Find(&records).Error; err != nil {
+	if err := s.database.DB.Where(
+		"id IN ? AND owner_id = ? AND expires_at > ? AND conversation_id = '' AND message_id = '' AND download_token_hash = ''",
+		ids, ownerID(actor), time.Now().UTC(),
+	).Find(&records).Error; err != nil {
 		return nil, err
 	}
 	if len(records) != len(ids) {
@@ -1283,11 +1337,98 @@ func (s *Service) consumeAttachments(actor identity.Actor, ids []string) ([]cons
 		}
 		result = append(result, consumedAttachment{record: record, data: data})
 	}
+	retainedIDs := make([]string, 0, len(result))
+	consumedIDs := make([]string, 0, len(result))
 	for _, attachment := range result {
-		_ = os.Remove(attachment.record.Path)
+		if isReusableImage(attachment) {
+			retainedIDs = append(retainedIDs, attachment.record.ID)
+			continue
+		}
+		consumedIDs = append(consumedIDs, attachment.record.ID)
 	}
-	if err := s.database.DB.Where("id IN ?", ids).Delete(&model.Attachment{}).Error; err != nil {
+	if len(retainedIDs) > 0 {
+		expiresAt := time.Now().UTC().Add(conversationImageTTL)
+		if err := s.database.DB.Model(&model.Attachment{}).Where("id IN ? AND owner_id = ?", retainedIDs, ownerID(actor)).Updates(map[string]any{
+			"conversation_id": conversationID,
+			"message_id":      messageID,
+			"expires_at":      expiresAt,
+		}).Error; err != nil {
+			return nil, err
+		}
+		for index := range result {
+			if isReusableImage(result[index]) {
+				result[index].record.ConversationID = conversationID
+				result[index].record.MessageID = messageID
+				result[index].record.ExpiresAt = expiresAt
+			}
+		}
+	}
+	if len(consumedIDs) > 0 {
+		if err := s.database.DB.Where("id IN ? AND owner_id = ?", consumedIDs, ownerID(actor)).Delete(&model.Attachment{}).Error; err != nil {
+			return nil, err
+		}
+		for _, attachment := range result {
+			if !isReusableImage(attachment) {
+				_ = os.Remove(attachment.record.Path)
+			}
+		}
+	}
+	return result, nil
+}
+
+func isReusableImage(attachment consumedAttachment) bool {
+	if attachment.record.ContentType != "image/jpeg" && attachment.record.ContentType != "image/png" {
+		return false
+	}
+	configuration, _, err := image.DecodeConfig(bytes.NewReader(attachment.data))
+	return err == nil && configuration.Width > 0 && configuration.Height > 0 && int64(configuration.Width)*int64(configuration.Height) <= 40_000_000
+}
+
+func (s *Service) recentConversationImages(actor identity.Actor, conversationID string) ([]consumedAttachment, error) {
+	now := time.Now().UTC()
+	var latest model.Attachment
+	if err := s.database.DB.Where(
+		"owner_id = ? AND conversation_id = ? AND message_id <> '' AND expires_at > ? AND download_token_hash = '' AND content_type IN ?",
+		ownerID(actor), conversationID, now, []string{"image/jpeg", "image/png"},
+	).Order("created_at DESC, id DESC").First(&latest).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	} else if err != nil {
 		return nil, err
+	}
+	var records []model.Attachment
+	if err := s.database.DB.Where(
+		"owner_id = ? AND conversation_id = ? AND message_id = ? AND expires_at > ? AND download_token_hash = '' AND content_type IN ?",
+		ownerID(actor), conversationID, latest.MessageID, now, []string{"image/jpeg", "image/png"},
+	).Order("created_at ASC, id ASC").Limit(4).Find(&records).Error; err != nil {
+		return nil, err
+	}
+	result := make([]consumedAttachment, 0, len(records))
+	missingIDs := make([]string, 0)
+	for _, record := range records {
+		data, err := os.ReadFile(record.Path)
+		if errors.Is(err, os.ErrNotExist) {
+			missingIDs = append(missingIDs, record.ID)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		attachment := consumedAttachment{record: record, data: data}
+		if isReusableImage(attachment) {
+			result = append(result, attachment)
+		}
+	}
+	if len(missingIDs) > 0 {
+		_ = s.database.DB.Where("id IN ? AND owner_id = ?", missingIDs, ownerID(actor)).Delete(&model.Attachment{}).Error
+	}
+	if len(result) > 0 {
+		ids := make([]string, 0, len(result))
+		for _, attachment := range result {
+			ids = append(ids, attachment.record.ID)
+		}
+		if err := s.database.DB.Model(&model.Attachment{}).Where("id IN ? AND owner_id = ?", ids, ownerID(actor)).Update("expires_at", now.Add(conversationImageTTL)).Error; err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
 }
@@ -1348,16 +1489,54 @@ type idPhotoSpecification struct {
 	heightMM        int
 }
 
-var idPhotoSizePattern = regexp.MustCompile(`小二寸|2寸|二寸|两寸|1寸|一寸`)
+var idPhotoSizePattern = regexp.MustCompile(`小二寸|1寸|一寸|2寸|二寸|两寸`)
 
 func shouldInheritAttachmentTask(content string) bool {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return true
 	}
-	for _, keyword := range []string{"证件", "寸", "底", "前面", "刚才", "这个", "重新", "上传", "处理"} {
+	for _, keyword := range []string{"图片", "照片", "原图", "证件", "寸", "底", "背景", "前面那张", "上一张", "刚才那张", "刚才那个", "这张", "这个", "重新", "换成", "改成", "上传", "处理"} {
 		if strings.Contains(content, keyword) {
 			return true
+		}
+	}
+	return false
+}
+
+func shouldReuseConversationImages(content string) bool {
+	content = strings.ToLower(strings.TrimSpace(content))
+	if content == "" {
+		return false
+	}
+	for _, keyword := range []string{
+		"图片", "照片", "原图", "证件", "寸", "底色", "蓝底", "红底", "白底", "背景",
+		"裁剪", "抠图", "像素", "dpi", "jpg", "jpeg", "png", "pdf", "前面那张", "前面的图", "上一张", "刚才那张", "刚才那个", "刚才的图", "刚才的照片", "这张",
+		"重新", "继续处理", "换成", "改成", "改为", "已经上传", "上传过", "蓝色", "红色", "白色",
+	} {
+		if strings.Contains(content, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func referencesConversationImage(content string) bool {
+	content = strings.TrimSpace(content)
+	for _, keyword := range []string{"刚才那张", "刚才那个", "刚才的图", "刚才的照片", "上一张", "前面那张", "前面的图", "这张图", "这张照片", "那个图片", "那个照片", "原图", "已经上传", "上传过"} {
+		if strings.Contains(content, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasConversationImageHistory(conversation *model.Conversation) bool {
+	for _, message := range conversation.Messages {
+		for _, attachment := range message.Attachments {
+			if strings.HasPrefix(attachment.ContentType, "image/") {
+				return true
+			}
 		}
 	}
 	return false
@@ -1371,21 +1550,43 @@ func parseIDPhotoTask(content string, attachments []consumedAttachment) (idPhoto
 		return idPhotoSpecification{}, false
 	}
 
-	sizeMatches := idPhotoSizePattern.FindAllString(content, -1)
-	if len(sizeMatches) == 0 {
+	type sizeCandidate struct {
+		index    int
+		label    string
+		width    int
+		height   int
+		widthMM  int
+		heightMM int
+	}
+	compactContent := strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "", "毫米", "", "mm", "").Replace(strings.ToLower(content))
+	selectedSize := sizeCandidate{index: -1}
+	if matches := idPhotoSizePattern.FindAllStringIndex(compactContent, -1); len(matches) > 0 {
+		match := matches[len(matches)-1]
+		selectedSize.index = match[0]
+		switch compactContent[match[0]:match[1]] {
+		case "一寸", "1寸":
+			selectedSize.label, selectedSize.width, selectedSize.height, selectedSize.widthMM, selectedSize.heightMM = "一寸", 295, 413, 25, 35
+		case "小二寸":
+			selectedSize.label, selectedSize.width, selectedSize.height, selectedSize.widthMM, selectedSize.heightMM = "小二寸", 413, 531, 35, 45
+		default:
+			selectedSize.label, selectedSize.width, selectedSize.height, selectedSize.widthMM, selectedSize.heightMM = "二寸", 413, 579, 35, 49
+		}
+	}
+	for _, candidate := range []sizeCandidate{
+		{index: lastKeywordIndex(compactContent, "295×413", "295x413", "295*413", "25×35", "25x35", "25*35"), label: "一寸", width: 295, height: 413, widthMM: 25, heightMM: 35},
+		{index: lastKeywordIndex(compactContent, "413×531", "413x531", "413*531", "35×45", "35x45", "35*45"), label: "小二寸", width: 413, height: 531, widthMM: 35, heightMM: 45},
+		{index: lastKeywordIndex(compactContent, "413×579", "413x579", "413*579", "35×49", "35x49", "35*49"), label: "二寸", width: 413, height: 579, widthMM: 35, heightMM: 49},
+	} {
+		if candidate.index > selectedSize.index {
+			selectedSize = candidate
+		}
+	}
+	if selectedSize.index < 0 {
 		return idPhotoSpecification{}, false
 	}
-	specification := idPhotoSpecification{}
-	switch sizeMatches[len(sizeMatches)-1] {
-	case "一寸", "1寸":
-		specification.label, specification.width, specification.height = "一寸", 295, 413
-		specification.widthMM, specification.heightMM = 25, 35
-	case "小二寸":
-		specification.label, specification.width, specification.height = "小二寸", 413, 531
-		specification.widthMM, specification.heightMM = 35, 45
-	default:
-		specification.label, specification.width, specification.height = "二寸", 413, 579
-		specification.widthMM, specification.heightMM = 35, 49
+	specification := idPhotoSpecification{
+		label: selectedSize.label, width: selectedSize.width, height: selectedSize.height,
+		widthMM: selectedSize.widthMM, heightMM: selectedSize.heightMM,
 	}
 
 	type backgroundCandidate struct {
@@ -1395,9 +1596,9 @@ func parseIDPhotoTask(content string, attachments []consumedAttachment) (idPhoto
 	}
 	selected := backgroundCandidate{index: -1}
 	for _, candidate := range []backgroundCandidate{
-		{index: lastKeywordIndex(content, "蓝底", "蓝色背景", "蓝背景"), label: "蓝底", hex: "438edb"},
-		{index: lastKeywordIndex(content, "红底", "红色背景", "红背景"), label: "红底", hex: "d81e06"},
-		{index: lastKeywordIndex(content, "白底", "白色背景", "白背景"), label: "白底", hex: "ffffff"},
+		{index: lastKeywordIndex(content, "蓝底", "蓝色背景", "蓝背景", "蓝色"), label: "蓝底", hex: "438edb"},
+		{index: lastKeywordIndex(content, "红底", "红色背景", "红背景", "红色"), label: "红底", hex: "d81e06"},
+		{index: lastKeywordIndex(content, "白底", "白色背景", "白背景", "白色"), label: "白底", hex: "ffffff"},
 	} {
 		if candidate.index > selected.index {
 			selected = candidate
@@ -1409,6 +1610,23 @@ func parseIDPhotoTask(content string, attachments []consumedAttachment) (idPhoto
 	specification.backgroundLabel = selected.label
 	specification.backgroundHex = selected.hex
 	return specification, true
+}
+
+func isIDPhotoIntent(content string, attachments []consumedAttachment) bool {
+	if len(attachments) != 1 || !isReusableImage(attachments[0]) {
+		return false
+	}
+	content = strings.NewReplacer(" ", "", "\t", "", "\r", "", "\n", "", "毫米", "", "mm", "").Replace(strings.ToLower(content))
+	for _, keyword := range []string{
+		"证件照", "证件照片", "证件相片", "寸照", "一寸", "二寸", "小二寸", "1寸", "2寸",
+		"蓝底", "红底", "白底", "413×579", "413x579", "413×531", "413x531", "295×413", "295x413",
+		"35×49", "35x49", "35×45", "35x45", "25×35", "25x35",
+	} {
+		if strings.Contains(content, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func lastKeywordIndex(content string, keywords ...string) int {
@@ -1470,7 +1688,7 @@ func (s *Service) createIDPhoto(ctx context.Context, actor identity.Actor, sourc
 		return "", err
 	}
 	return fmt.Sprintf(
-		"已处理为%s%s证件照。\n\n[下载%s](/api/v1/attachments/%s/download?token=%s)\n\n规格：%d × %d mm · %d × %d px · 300 DPI\n\n文件将在 7 天后自动删除。",
+		"已处理为%s%s证件照。\n\n[下载%s](/api/v1/attachments/%s/download?token=%s)\n\n规格：%d × %d mm · %d × %d px · 300 DPI\n\n原图已在当前对话中保留；后续可直接回复新的尺寸或底色，无需重新上传。生成文件将在 7 天后自动删除。",
 		specification.label, specification.backgroundLabel, name, attachment.ID, url.QueryEscape(token),
 		specification.widthMM, specification.heightMM, specification.width, specification.height,
 	), nil

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -393,7 +394,7 @@ func TestAttachmentIsConsumedAndDeletedAfterMessage(t *testing.T) {
 	}
 }
 
-func TestImageAttachmentStoresThumbnailButDeletesOriginal(t *testing.T) {
+func TestImageAttachmentStoresThumbnailAndRetainsOriginalForConversation(t *testing.T) {
 	models := &captureModels{}
 	service := testServiceWithModels(t, models)
 	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
@@ -411,15 +412,15 @@ func TestImageAttachmentStoresThumbnailButDeletesOriginal(t *testing.T) {
 	if err := jpeg.Encode(&data, picture, &jpeg.Options{Quality: 90}); err != nil {
 		t.Fatal(err)
 	}
-	attachment, err := service.CreateAttachment(alice, "photo.jpg", "image/jpeg", data.Bytes())
+	attachment, err := service.CreateAttachment(alice, "photo.jpg", "application/octet-stream", data.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.SendMessage(context.Background(), alice, conversation.ID, MessageInput{Content: "描述图片", AttachmentIDs: []string{attachment.ID}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(attachment.Path); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("original image was not deleted: %v", err)
+	if _, err := os.Stat(attachment.Path); err != nil {
+		t.Fatalf("original image was not retained: %v", err)
 	}
 	loaded, err := service.Conversation(alice, conversation.ID)
 	if err != nil || len(loaded.Messages[0].Attachments) != 1 {
@@ -436,6 +437,140 @@ func TestImageAttachmentStoresThumbnailButDeletesOriginal(t *testing.T) {
 	configuration, _, err := image.DecodeConfig(bytes.NewReader(thumbnailData))
 	if err != nil || configuration.Width != 320 || configuration.Height != 213 {
 		t.Fatalf("thumbnail = %#v, %v", configuration, err)
+	}
+	var retained model.Attachment
+	if err := service.database.DB.First(&retained, "id = ?", attachment.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if retained.ConversationID != conversation.ID || retained.MessageID != loaded.Messages[0].ID || time.Until(retained.ExpiresAt) < 29*24*time.Hour {
+		t.Fatalf("retained attachment = %#v", retained)
+	}
+	if err := service.DeleteConversation(alice, conversation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(attachment.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("conversation image was not deleted with conversation: %v", err)
+	}
+	var count int64
+	if err := service.database.DB.Model(&model.Attachment{}).Where("id = ?", attachment.ID).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("retained attachment rows = %d, %v", count, err)
+	}
+}
+
+func TestIDPhotoReusesRetainedConversationImage(t *testing.T) {
+	var receivedSource []byte
+	imageTool := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if err := request.ParseMultipartForm(maxAttachmentBytes); err != nil {
+			t.Fatal(err)
+		}
+		file, _, err := request.FormFile("file")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		receivedSource, err = io.ReadAll(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		output := image.NewNRGBA(image.Rect(0, 0, 500, 700))
+		for y := 20; y < 700; y++ {
+			for x := 80; x < 420; x++ {
+				output.SetNRGBA(x, y, color.NRGBA{R: 210, G: 170, B: 140, A: 255})
+			}
+		}
+		response.Header().Set("Content-Type", "image/png")
+		if err := png.Encode(response, output); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	t.Cleanup(imageTool.Close)
+
+	models := &captureModels{}
+	service := testServiceWithModels(t, models)
+	service.imageToolURL = imageTool.URL
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
+	createAvailableProvider(t, service, admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	conversation, _ := service.CreateConversation(alice, ConversationInput{})
+
+	source := image.NewRGBA(image.Rect(0, 0, 600, 800))
+	var sourceData bytes.Buffer
+	if err := jpeg.Encode(&sourceData, source, &jpeg.Options{Quality: 85}); err != nil {
+		t.Fatal(err)
+	}
+	attachment, err := service.CreateAttachment(alice, "portrait.jpg", "image/jpeg", sourceData.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SendMessage(context.Background(), alice, conversation.ID, MessageInput{
+		Content: "先看看这张原图", AttachmentIDs: []string{attachment.ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if models.completeCalls != 1 {
+		t.Fatalf("initial model calls = %d", models.completeCalls)
+	}
+
+	answer, err := service.SendMessage(context.Background(), alice, conversation.ID, MessageInput{Content: "把刚才那张做成二寸蓝底证件照"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Model != "图片工具" || !strings.Contains(answer.Content, "二寸蓝底证件照") || !strings.Contains(answer.Content, "无需重新上传") {
+		t.Fatalf("answer = %#v", answer)
+	}
+	if models.completeCalls != 1 || !bytes.Equal(receivedSource, sourceData.Bytes()) {
+		t.Fatalf("model calls = %d, reused bytes = %d", models.completeCalls, len(receivedSource))
+	}
+}
+
+func TestIncompleteIDPhotoRequestAsksForMissingParameters(t *testing.T) {
+	models := &captureModels{}
+	service := testServiceWithModels(t, models)
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
+	createAvailableProvider(t, service, admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	conversation, _ := service.CreateConversation(alice, ConversationInput{})
+
+	picture := image.NewRGBA(image.Rect(0, 0, 300, 400))
+	var data bytes.Buffer
+	if err := jpeg.Encode(&data, picture, &jpeg.Options{Quality: 80}); err != nil {
+		t.Fatal(err)
+	}
+	attachment, err := service.CreateAttachment(alice, "portrait.jpg", "image/jpeg", data.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer, err := service.SendMessage(context.Background(), alice, conversation.ID, MessageInput{
+		Content: "帮我做成证件照", AttachmentIDs: []string{attachment.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Model != "图片工具" || !strings.Contains(answer.Content, "二寸") || !strings.Contains(answer.Content, "无需重新上传") || models.completeCalls != 0 {
+		t.Fatalf("answer = %#v, model calls = %d", answer, models.completeCalls)
+	}
+}
+
+func TestMissingRetainedImageAsksForOneReupload(t *testing.T) {
+	models := &captureModels{}
+	service := testServiceWithModels(t, models)
+	admin := identity.Actor{Username: "admin", Source: "internal", Role: identity.RoleAdmin}
+	alice := identity.Actor{Username: "alice", Role: identity.RoleUser}
+	createAvailableProvider(t, service, admin, ProviderInput{Name: "Shared", BaseURL: "http://localhost/v1", DefaultModel: "model"})
+	conversation, _ := service.CreateConversation(alice, ConversationInput{})
+	attachmentMetadata, _ := json.Marshal([]model.MessageAttachment{{Name: "old-photo.jpg", ContentType: "image/jpeg", PreviewURL: "data:image/jpeg;base64,b2xk"}})
+	if err := service.database.DB.Create(&model.Message{
+		ID: "msg_old_image", ConversationID: conversation.ID, Role: "user", Content: "帮我处理这张图片", Status: "completed", AttachmentNames: string(attachmentMetadata),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	answer, err := service.SendMessage(context.Background(), alice, conversation.ID, MessageInput{Content: "刚才不是已经上传了吗"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Model != "图片工具" || !strings.Contains(answer.Content, "重新上传一次") || !strings.Contains(answer.Content, "30 天") || models.completeCalls != 0 {
+		t.Fatalf("answer = %#v, model calls = %d", answer, models.completeCalls)
 	}
 }
 

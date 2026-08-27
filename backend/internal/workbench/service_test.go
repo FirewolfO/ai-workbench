@@ -127,6 +127,33 @@ func TestPromptLifecycleAndProviderConflict(t *testing.T) {
 	}
 }
 
+func TestFileToolResultUsesExpiringSecretDownload(t *testing.T) {
+	service := testService(t)
+	actor := identity.Actor{ID: "anonymous:test-device", Username: "anonymous:test-device", Source: "anonymous", Role: identity.RoleUser}
+	result, err := service.RunFileTool(context.Background(), actor, "zip_files", []FileToolInput{
+		{Name: "计划.txt", ContentType: "text/plain", Data: []byte("plan")},
+		{Name: "清单.txt", ContentType: "text/plain", Data: []byte("list")},
+	}, FileToolOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`/attachments/([^/]+)/download\?token=([^&]+)$`).FindStringSubmatch(result.DownloadURL)
+	if len(match) != 3 || result.Name != "文件打包.zip" || result.Size == 0 || !result.ExpiresAt.After(time.Now().Add(6*24*time.Hour)) {
+		t.Fatalf("unexpected file tool result: %#v", result)
+	}
+	record, file, err := service.OpenGeneratedAttachment(match[1], match[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if record.OwnerID != ownerID(actor) || record.ContentType != "application/zip" {
+		t.Fatalf("unexpected downloadable attachment: %#v", record)
+	}
+	if _, _, err := service.OpenGeneratedAttachment(match[1], "wrong-token"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("wrong token should be rejected: %v", err)
+	}
+}
+
 func TestSharedPromptsAreReadableButOnlyOwnersCanManageThem(t *testing.T) {
 	service := testService(t)
 	admin := identity.Actor{ID: "internal:admin", Username: "admin", Source: "internal", Role: identity.RoleAdmin}

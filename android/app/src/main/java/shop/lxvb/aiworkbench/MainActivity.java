@@ -31,6 +31,7 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -74,6 +75,7 @@ public final class MainActivity extends Activity {
     private AppUpdate latestRelease;
     private boolean checkingForUpdate;
     private boolean manualUpdateCheck;
+    private boolean updateDownloadAuthorized;
     private long lastUpdateCheckAt;
     private String promptedVersion = "";
     private String updateStatus = "idle";
@@ -88,14 +90,17 @@ public final class MainActivity extends Activity {
         root.setOnApplyWindowInsetsListener((view, windowInsets) -> {
             Insets safeArea = windowInsets.getInsets(
                     WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            Insets keyboard = windowInsets.getInsets(WindowInsets.Type.ime());
+            int visibleBottom = Math.max(safeArea.bottom, keyboard.bottom);
             if (view.getPaddingLeft() != safeArea.left || view.getPaddingTop() != safeArea.top
-                    || view.getPaddingRight() != safeArea.right || view.getPaddingBottom() != safeArea.bottom) {
-                view.setPadding(safeArea.left, safeArea.top, safeArea.right, safeArea.bottom);
+                    || view.getPaddingRight() != safeArea.right || view.getPaddingBottom() != visibleBottom) {
+                view.setPadding(safeArea.left, safeArea.top, safeArea.right, visibleBottom);
             }
             return WindowInsets.CONSUMED;
         });
         setContentView(root);
         // PhoneWindow has no DecorView before setContentView on Android 15 and 16.
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         getWindow().setNavigationBarContrastEnforced(false);
         root.requestApplyInsets();
 
@@ -395,14 +400,15 @@ public final class MainActivity extends Activity {
         String size = update.size > 0 ? "\n安装包大小：" + formatSize(update.size) : "";
         new AlertDialog.Builder(this)
                 .setTitle("发现新版本 " + update.version)
-                .setMessage("可以下载并覆盖安装最新版 AI 工作台。" + size)
+                .setMessage("是否下载并安装最新版 AI 工作台？只有你点击“同意并下载”后才会开始下载。" + size)
                 .setNegativeButton("稍后", null)
-                .setPositiveButton("立即更新", (dialog, which) -> prepareUpdate(update))
+                .setPositiveButton("同意并下载", (dialog, which) -> prepareUpdate(update))
                 .show();
     }
 
     private void prepareUpdate(AppUpdate update) {
         pendingUpdate = update;
+        updateDownloadAuthorized = true;
         if (!getPackageManager().canRequestPackageInstalls()) {
             startActivityForResult(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                     Uri.parse("package:" + getPackageName())), INSTALL_PERMISSION_REQUEST);
@@ -442,9 +448,11 @@ public final class MainActivity extends Activity {
     }
 
     private void downloadPendingUpdate() {
+        if (!updateDownloadAuthorized) return;
         AppUpdate update = pendingUpdate;
         if (update == null) return;
         pendingUpdate = null;
+        updateDownloadAuthorized = false;
         String filename = update.filename.replaceAll("[^A-Za-z0-9._-]", "_");
         if (!filename.toLowerCase(Locale.ROOT).endsWith(".apk")) filename += ".apk";
         String url = update.url.startsWith("http://") || update.url.startsWith("https://")

@@ -44,7 +44,9 @@ const pendingModel = ref('')
 const promptOpen = ref(false)
 const settingsOpen = ref(false)
 const mobileConversationsOpen = ref(false)
+const composerFocused = ref(false)
 const thread = ref<HTMLElement | null>(null)
+const composer = ref<HTMLElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const settings = reactive({ providerId: '', model: '', systemPrompt: '', reasoningEffort: 'medium' as ReasoningEffort })
 const selectedProviderId = computed(() => current.value?.providerId || pendingProviderId.value)
@@ -80,6 +82,7 @@ let reasoningTimer: number | undefined
 let reasoningSaving = false
 let generationPoll = 0
 let pendingReasoning: { conversationId: string; value: ReasoningEffort } | null = null
+let composerVisibilityTimer: number | undefined
 const persistedReasoning = new Map<string, ReasoningEffort>()
 const MAX_ATTACHMENT_SIZE = 8 * 1024 * 1024
 const MAX_CONCURRENT_UPLOADS = 2
@@ -389,6 +392,28 @@ function canPreviewAttachment(attachment: MessageAttachment) {
   return isImagePreview(attachment.contentType, attachment.previewUrl || '')
 }
 async function scrollToEnd() { await nextTick(); if (thread.value) thread.value.scrollTop = thread.value.scrollHeight }
+function updateVisibleViewport() {
+  const height = window.visualViewport?.height || window.innerHeight
+  document.documentElement.style.setProperty('--chat-visible-viewport-height', `${Math.round(height)}px`)
+  if (!composerFocused.value) return
+  void nextTick(() => {
+    if (thread.value) thread.value.scrollTop = thread.value.scrollHeight
+    composer.value?.scrollIntoView({ block: 'nearest' })
+  })
+}
+function keepComposerVisible() {
+  if (composerVisibilityTimer) window.clearTimeout(composerVisibilityTimer)
+  composerVisibilityTimer = window.setTimeout(updateVisibleViewport, 80)
+}
+function focusComposer() {
+  composerFocused.value = true
+  updateVisibleViewport()
+  keepComposerVisible()
+}
+function blurComposer() {
+  composerFocused.value = false
+  keepComposerVisible()
+}
 async function selectPrompt(item: Prompt) { await workbenchApi.usePrompt(item.id); draft.value = item.content; promptOpen.value = false; await nextTick() }
 function applyConversationUpdate(updated: Conversation) {
   if (current.value?.id === updated.id) updated.reasoningEffort = current.value.reasoningEffort
@@ -425,23 +450,32 @@ watch(() => route.params.id, (id) => {
 })
 onMounted(() => {
   void initialize()
+  updateVisibleViewport()
   modelRefreshTimer = window.setInterval(refreshModelsWhenVisible, 60_000)
   document.addEventListener('visibilitychange', refreshModelsWhenVisible)
   window.addEventListener('focus', refreshModelsWhenVisible)
+  window.addEventListener('resize', updateVisibleViewport)
+  window.visualViewport?.addEventListener('resize', updateVisibleViewport)
+  window.visualViewport?.addEventListener('scroll', updateVisibleViewport)
 })
 onBeforeUnmount(() => {
   generationPoll += 1
   clearUnusedAttachments()
   if (modelRefreshTimer) window.clearInterval(modelRefreshTimer)
   if (reasoningTimer) window.clearTimeout(reasoningTimer)
+  if (composerVisibilityTimer) window.clearTimeout(composerVisibilityTimer)
   if (pendingReasoning) void flushReasoning()
   document.removeEventListener('visibilitychange', refreshModelsWhenVisible)
   window.removeEventListener('focus', refreshModelsWhenVisible)
+  window.removeEventListener('resize', updateVisibleViewport)
+  window.visualViewport?.removeEventListener('resize', updateVisibleViewport)
+  window.visualViewport?.removeEventListener('scroll', updateVisibleViewport)
+  document.documentElement.style.removeProperty('--chat-visible-viewport-height')
 })
 </script>
 
 <template>
-  <section class="chat-workspace">
+  <section class="chat-workspace" :class="{ 'composer-focused': composerFocused }">
     <button v-if="mobileConversationsOpen" class="conversation-scrim" type="button" aria-label="关闭对话列表" @click="mobileConversationsOpen = false" />
     <aside class="conversation-panel" :class="{ 'mobile-open': mobileConversationsOpen }">
       <header class="conversation-mobile-header"><strong>对话</strong><el-button text :icon="Close" aria-label="关闭对话列表" @click="mobileConversationsOpen = false" /></header>
@@ -469,7 +503,7 @@ onBeforeUnmount(() => {
           </article>
           <article v-if="sending" class="message-row assistant"><span class="message-avatar">AI</span><div class="message-body thinking"><i></i><i></i><i></i><span>{{ stopping ? '正在停止' : '正在生成' }}</span></div></article>
         </div>
-        <footer class="composer">
+        <footer ref="composer" class="composer">
           <div v-if="attachmentUploads.length" class="attachment-list" aria-live="polite">
             <span v-for="item in attachmentUploads" :key="item.localId" class="attachment-chip" :class="[`is-${item.status}`, { 'has-preview': item.previewUrl }]" :style="{ '--upload-progress': `${item.progress}%` }" :title="item.error || item.name">
               <img v-if="item.previewUrl" class="attachment-upload-preview" :src="item.previewUrl" alt="" />
@@ -485,7 +519,7 @@ onBeforeUnmount(() => {
               </span>
             </span>
           </div>
-          <el-input v-model="draft" type="textarea" resize="none" :autosize="{ minRows: 2, maxRows: 7 }" maxlength="20000" placeholder="输入消息" @paste="pasteAttachments" @keydown.enter.exact.prevent="send" />
+          <el-input v-model="draft" type="textarea" resize="none" :autosize="{ minRows: 2, maxRows: 7 }" maxlength="20000" placeholder="输入消息" @focus="focusComposer" @blur="blurComposer" @input="keepComposerVisible" @paste="pasteAttachments" @keydown.enter.exact.prevent="send" />
           <div class="composer-tools">
             <div class="composer-actions">
               <el-button class="attachment-trigger" :class="`is-${uploadButtonState}`" text aria-label="选择附件" @click="openFilePicker">

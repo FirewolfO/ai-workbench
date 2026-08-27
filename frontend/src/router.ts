@@ -16,6 +16,7 @@ const router = createRouter({
         { path: '', redirect: '/chat' },
         { path: 'dashboard', name: 'dashboard', component: () => import('@/views/DashboardView.vue'), meta: { title: '概览' } },
         { path: 'chat/:id?', name: 'chat', component: () => import('@/views/ChatView.vue'), meta: { title: '对话' } },
+        { path: 'tools', name: 'tools', component: () => import('@/views/ToolsView.vue'), meta: { title: '实用工具' } },
         { path: 'prompts', name: 'prompts', component: () => import('@/views/PromptsView.vue'), meta: { title: '提示词' } },
         { path: 'providers', name: 'providers', component: () => import('@/views/ProvidersView.vue'), meta: { title: '模型连接', admin: true } },
         { path: 'users', name: 'users', component: () => import('@/views/UsersView.vue'), meta: { title: '用户管理', admin: true } },

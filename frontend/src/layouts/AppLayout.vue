@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChatLineRound, Close, Compass, Connection, DataAnalysis, Download, MagicStick, Menu as MenuIcon, Refresh, SwitchButton, TrendCharts, User } from '@element-plus/icons-vue'
+import { ChatLineRound, Close, Compass, Connection, DataAnalysis, Download, Files, MagicStick, Menu as MenuIcon, Refresh, SwitchButton, TrendCharts, User } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
 declare global {
@@ -20,6 +20,7 @@ let updateCheckTimer: number | undefined
 const pageTitle = computed(() => String(route.meta.title || 'AI 工作台'))
 const items = computed(() => [
   { path: '/chat', label: '对话', icon: ChatLineRound },
+  { path: '/tools', label: '实用工具', icon: Files },
   { path: '/news', label: 'AI 热点', icon: TrendCharts },
   { path: '/frontier', label: '前沿项目', icon: Compass },
   { path: '/prompts', label: '提示词', icon: MagicStick },
@@ -28,7 +29,7 @@ const items = computed(() => [
 ])
 const updateStatusText = computed(() => {
   if (updateStatus.value === 'checking') return '正在检查...'
-  if (updateStatus.value === 'available' && availableUpdate.value) return `发现 v${availableUpdate.value.version}`
+  if (updateStatus.value === 'available' && availableUpdate.value) return `发现 v${availableUpdate.value.version}，点击后选择是否更新`
   if (updateStatus.value === 'current') return currentAppVersion.value ? `已是最新版 · v${currentAppVersion.value}` : '已是最新版'
   if (updateStatus.value === 'downloading') return '正在下载安装包'
   if (updateStatus.value === 'downloaded') return '安装包已下载，正在打开安装'
@@ -66,6 +67,10 @@ function checkForAppUpdate() {
   updateCheckTimer = window.setTimeout(() => {
     if (updateStatus.value === 'checking') updateStatus.value = 'error'
   }, 12_000)
+}
+function requestAvailableUpdate() {
+  if (!availableUpdate.value) return
+  window.location.href = `ai-workbench://update?version=${encodeURIComponent(availableUpdate.value.version)}`
 }
 onMounted(() => {
   isNativeApp.value = Boolean(window.AIWorkbenchNative) || navigator.userAgent.includes('AIWorkbenchAndroid/')
@@ -105,7 +110,7 @@ onBeforeUnmount(() => {
       <header class="topbar">
         <el-button class="mobile-menu" text :icon="MenuIcon" aria-label="打开功能导航" @click="drawerOpen = true" />
         <h1>{{ pageTitle }}</h1>
-        <a v-if="availableUpdate" class="app-update-link" :href="`ai-workbench://update?version=${encodeURIComponent(availableUpdate.version)}`" aria-label="下载并更新新版本"><el-icon><Download /></el-icon><span>新版本</span><b>v{{ availableUpdate.version }}</b></a>
+        <button v-if="availableUpdate" class="app-update-link" type="button" aria-label="查看新版本更新" @click="requestAvailableUpdate"><el-icon><Download /></el-icon><span>新版本</span><b>v{{ availableUpdate.version }}</b></button>
         <el-dropdown v-if="auth.authenticated" trigger="click">
           <button class="identity-button" type="button"><span>{{ auth.user?.displayName?.slice(0, 1) || 'U' }}</span><strong>{{ auth.user?.displayName || auth.user?.username }}</strong></button>
           <template #dropdown><el-dropdown-menu><el-dropdown-item disabled>{{ auth.user?.username }}</el-dropdown-item><el-dropdown-item divided :icon="SwitchButton" @click="logout">退出登录</el-dropdown-item></el-dropdown-menu></template>

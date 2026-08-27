@@ -19,6 +19,11 @@ const frontier = {
   ],
 }
 
+const fileTools = [
+  { id: 'office_to_pdf', name: 'Word / Office 转 PDF', description: '把 Word、Excel、PPT 转成 PDF', category: '文档转换', icon: 'Document', accept: '.doc,.docx,.xls,.xlsx,.ppt,.pptx', multiple: false, minFiles: 1, maxFiles: 1, available: true },
+  { id: 'zip_files', name: '文件打包 ZIP', description: '把多个文件快速打包', category: '办公整理', icon: 'Folder', accept: '*/*', multiple: true, minFiles: 1, maxFiles: 12, available: true },
+]
+
 test.beforeEach(async ({ page }, testInfo) => {
   let queued = false
   let generationPolls = 0
@@ -64,6 +69,8 @@ test.beforeEach(async ({ page }, testInfo) => {
       data = { id: `att_${attachmentSequence}`, name: filename, contentType: 'text/plain', size: 12, expiresAt: '2099-01-01T00:00:00Z' }
     }
     else if (path.includes('/attachments/') && route.request().method() === 'DELETE') data = { deleted: true }
+    else if (path.endsWith('/file-tools')) data = fileTools
+    else if (path.endsWith('/file-tools/zip_files') && route.request().method() === 'POST') data = { name: '文件打包.zip', contentType: 'application/zip', size: 220, summary: '已打包 2 个文件', downloadUrl: '/api/v1/attachments/att_result/download?token=result-token', expiresAt: '2099-01-01T00:00:00Z' }
     else if (path.endsWith('/frontier')) data = frontier
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 'OK', message: 'success', data }) })
   })
@@ -144,13 +151,42 @@ test('oversized attachments stay visible with a reason', async ({ page }) => {
   await expect(page.locator('.attachment-trigger.is-failed')).toBeVisible()
 })
 
-test('native update event exposes the in-app update action', async ({ page }) => {
+test('native update event exposes a user-controlled update action', async ({ page }) => {
   await page.goto('/chat/cnv_demo')
   await expect(page.getByRole('heading', { level: 1, name: '对话' })).toBeVisible()
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('ai-workbench-app-update', { detail: { version: '1.1.5', size: 40_000 } })))
-  const update = page.getByRole('link', { name: '下载并更新新版本' })
+  const update = page.getByRole('button', { name: '查看新版本更新' })
   await expect(update).toBeVisible()
-  await expect(update).toHaveAttribute('href', 'ai-workbench://update?version=1.1.5')
+  await expect(update).not.toHaveAttribute('href')
+  await expect(page.getByText('正在下载安装包')).toHaveCount(0)
+})
+
+test('file tools run directly and return a secure download', async ({ page }, testInfo) => {
+  await page.goto('/tools')
+  await expect(page.getByRole('heading', { level: 1, name: '实用工具' })).toBeVisible()
+  await page.getByRole('button', { name: /文件打包 ZIP/ }).click()
+  await page.locator('.tool-runner input[type="file"]').setInputFiles([
+    { name: '工作计划.txt', mimeType: 'text/plain', buffer: Buffer.from('plan') },
+    { name: '会议纪要.txt', mimeType: 'text/plain', buffer: Buffer.from('notes') },
+  ])
+  await expect(page.getByText('已选择 2 个')).toBeVisible()
+  await page.getByRole('button', { name: '开始处理' }).click()
+  await expect(page.getByText('已打包 2 个文件')).toBeVisible()
+  await expect(page.getByRole('link', { name: '下载结果' })).toHaveAttribute('href', '/api/v1/attachments/att_result/download?token=result-token')
+  if (testInfo.project.name === 'mobile') await page.screenshot({ path: '../.runtime/screenshots/file-tools-mobile.png', fullPage: true })
+})
+
+test('mobile composer stays in the visible workspace while typing', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', 'mobile viewport behavior')
+  await page.goto('/chat/cnv_demo')
+  const input = page.getByPlaceholder('输入消息')
+  await input.focus()
+  await input.fill('手机端输入内容可见')
+  await expect(page.locator('.chat-workspace')).toHaveClass(/composer-focused/)
+  const composer = await page.locator('.composer').boundingBox()
+  const viewport = page.viewportSize()
+  expect(composer && viewport && composer.y + composer.height <= viewport.height).toBe(true)
+  await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--chat-visible-viewport-height'))).not.toBe('')
 })
 
 test('native version check is always visible at the bottom of the menu', async ({ page }, testInfo) => {

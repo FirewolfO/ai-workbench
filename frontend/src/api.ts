@@ -1,5 +1,5 @@
 import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios'
-import type { Attachment, AvailableModel, ContentStatus, Conversation, CreatedUser, Dashboard, FrontierCategory, FrontierResult, InternalUser, Message, NewsResult, NewsSummaryResult, Prompt, PromptInput, Provider, ProviderInput, ReasoningEffort, Session, SyncState, User } from './types'
+import type { Attachment, AvailableModel, ContentStatus, Conversation, CreatedUser, Dashboard, FileTool, FileToolResult, FileToolRunOptions, FrontierCategory, FrontierResult, InternalUser, Message, NewsResult, NewsSummaryResult, Prompt, PromptInput, Provider, ProviderInput, ReasoningEffort, Session, SyncState, User } from './types'
 
 interface Envelope<T> { code: string; message: string; data: T }
 interface RetryConfig extends InternalAxiosRequestConfig { _retry?: boolean }
@@ -103,6 +103,24 @@ export const workbenchApi = {
   deleteConversation: (id: string) => unwrap<{ deleted: boolean }>(api.delete(`/conversations/${id}`)),
   queueMessage: (id: string, content: string, attachmentIds: string[] = []) => unwrap<Message>(api.post(`/conversations/${id}/messages/async`, { content, attachmentIds })),
   stopGeneration: (id: string) => unwrap<{ stopped: boolean }>(api.post(`/conversations/${id}/stop`)),
+  fileTools: () => unwrap<FileTool[]>(api.get('/file-tools')),
+  runFileTool: (id: string, files: File[], options: FileToolRunOptions, onProgress?: (progress: number) => void) => {
+    const data = new FormData()
+    for (const file of files) data.append('files', file)
+    if (options.pageRange != null) data.append('pageRange', options.pageRange)
+    if (options.quality != null) data.append('quality', options.quality)
+    if (options.imageFormat != null) data.append('imageFormat', options.imageFormat)
+    if (options.maxWidth != null) data.append('maxWidth', String(options.maxWidth))
+    const totalSize = files.reduce((total, file) => total + file.size, 0)
+    return unwrap<FileToolResult>(api.post(`/file-tools/${encodeURIComponent(id)}`, data, {
+      timeout: 5 * 60_000,
+      onUploadProgress: (event) => {
+        if (!onProgress) return
+        const total = event.total || totalSize
+        onProgress(total > 0 ? Math.min(100, Math.round((event.loaded / total) * 100)) : 0)
+      },
+    }))
+  },
   uploadAttachment: (file: File, onProgress?: (progress: number) => void, signal?: AbortSignal) => {
     const data = new FormData()
     data.append('file', file)

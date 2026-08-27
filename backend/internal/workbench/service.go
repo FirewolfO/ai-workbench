@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"ai-workbench/internal/assistanttools"
+	"ai-workbench/internal/filetools"
 	"ai-workbench/internal/identity"
 	"ai-workbench/internal/llm"
 	"ai-workbench/internal/model"
@@ -43,13 +44,15 @@ import (
 )
 
 var (
-	ErrInvalid    = errors.New("invalid input")
-	ErrNotFound   = errors.New("not found")
-	ErrConflict   = errors.New("conflict")
-	ErrProvider   = errors.New("provider unavailable")
-	ErrNoProvider = errors.New("no available provider")
-	ErrForbidden  = errors.New("forbidden")
-	ErrCanceled   = errors.New("generation canceled")
+	ErrInvalid         = errors.New("invalid input")
+	ErrNotFound        = errors.New("not found")
+	ErrConflict        = errors.New("conflict")
+	ErrProvider        = errors.New("provider unavailable")
+	ErrNoProvider      = errors.New("no available provider")
+	ErrForbidden       = errors.New("forbidden")
+	ErrCanceled        = errors.New("generation canceled")
+	ErrToolUnavailable = errors.New("file tool unavailable")
+	ErrToolFailed      = errors.New("file tool failed")
 )
 
 const (
@@ -60,6 +63,7 @@ const (
 	generatedAttachmentTTL      = 7 * 24 * time.Hour
 	modelCatalogRefreshInterval = 5 * time.Minute
 	asyncGenerationTimeout      = 4 * time.Minute
+	fileToolTimeout             = 4 * time.Minute
 	protocolChatCompletions     = "chat_completions"
 	protocolResponses           = "responses"
 )
@@ -69,6 +73,7 @@ type Service struct {
 	vault           *security.Vault
 	models          llm.Client
 	assistantTools  *assistanttools.Service
+	fileTools       *filetools.Service
 	attachmentDir   string
 	imageToolURL    string
 	imageHTTPClient *http.Client
@@ -152,6 +157,28 @@ type NewsSummaryResult struct {
 	Summaries map[string]string `json:"summaries"`
 }
 
+type FileToolInput struct {
+	Name        string
+	ContentType string
+	Data        []byte
+}
+
+type FileToolOptions struct {
+	PageRange   string
+	Quality     string
+	ImageFormat string
+	MaxWidth    int
+}
+
+type FileToolResult struct {
+	Name        string    `json:"name"`
+	ContentType string    `json:"contentType"`
+	Size        int64     `json:"size"`
+	Summary     string    `json:"summary"`
+	DownloadURL string    `json:"downloadUrl"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+}
+
 type AvailableModel struct {
 	ID               string     `json:"id"`
 	Name             string     `json:"name"`
@@ -172,7 +199,7 @@ func New(database *store.Store, vault *security.Vault, models llm.Client, attach
 	}
 	service := &Service{
 		database: database, vault: vault, models: models, attachmentDir: attachmentDir,
-		assistantTools: assistanttools.New(), imageToolURL: imageToolURL,
+		assistantTools: assistanttools.New(), fileTools: filetools.New(), imageToolURL: imageToolURL,
 		imageHTTPClient: &http.Client{Timeout: 2 * time.Minute}, inflight: map[string]context.CancelFunc{},
 	}
 	_ = os.MkdirAll(attachmentDir, 0o700)
@@ -1134,6 +1161,43 @@ func (s *Service) StopGeneration(actor identity.Actor, conversationID string) (b
 	}
 	cancel()
 	return true, nil
+}
+
+func (s *Service) FileTools() []filetools.Definition {
+	return s.fileTools.Catalog()
+}
+
+func (s *Service) RunFileTool(ctx context.Context, actor identity.Actor, operation string, inputs []FileToolInput, options FileToolOptions) (*FileToolResult, error) {
+	toolInputs := make([]filetools.Input, 0, len(inputs))
+	for _, input := range inputs {
+		toolInputs = append(toolInputs, filetools.Input{Name: input.Name, ContentType: input.ContentType, Data: input.Data})
+	}
+	toolContext, cancel := context.WithTimeout(ctx, fileToolTimeout)
+	defer cancel()
+	result, err := s.fileTools.Run(toolContext, strings.TrimSpace(operation), toolInputs, filetools.Options{
+		PageRange: options.PageRange, Quality: options.Quality, ImageFormat: options.ImageFormat, MaxWidth: options.MaxWidth,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, filetools.ErrInvalid):
+			return nil, ErrInvalid
+		case errors.Is(err, filetools.ErrUnavailable):
+			return nil, ErrToolUnavailable
+		case errors.Is(err, context.DeadlineExceeded):
+			return nil, fmt.Errorf("%w: 转换超时，请缩小文件后重试", ErrToolFailed)
+		default:
+			return nil, fmt.Errorf("%w: %v", ErrToolFailed, err)
+		}
+	}
+	attachment, token, err := s.createDownloadableAttachment(actor, result.Name, result.ContentType, result.Data)
+	if err != nil {
+		return nil, err
+	}
+	return &FileToolResult{
+		Name: attachment.Name, ContentType: attachment.ContentType, Size: attachment.Size,
+		Summary: result.Summary, DownloadURL: fmt.Sprintf("/api/v1/attachments/%s/download?token=%s", attachment.ID, url.QueryEscape(token)),
+		ExpiresAt: attachment.ExpiresAt,
+	}, nil
 }
 
 func (s *Service) beginGeneration(ctx context.Context, actor identity.Actor, conversationID string) (context.Context, context.CancelFunc, error) {

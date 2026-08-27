@@ -9,6 +9,7 @@
 - 多轮对话、系统提示词、模型切换、快速/中等/高/极高四档推理、停止生成、自动命名、搜索、置顶、重命名和删除
 - 支持 OpenAI Responses API 原生联网搜索，模型可按问题主动检索实时信息并在回答中保留来源链接
 - 后端内置天气预报、当前时间、精确计算、常用单位换算、参考汇率和公共节假日工具；Responses 与 Chat Completions 模型均可自主调用，实时结果包含来源
+- 独立“实用工具”中心无需调用模型即可完成 Word/Excel/PPT 转 PDF、PDF 转 Word、PDF 合并/页面提取/压缩/转图片/提取文字、图片合并为 PDF、图片格式压缩及 ZIP 打包；原文件仅在转换期间使用，下载结果 7 天后自动删除
 - Web 支持从剪贴板直接粘贴一个或多个图片/文件，文件选择与粘贴共用并发上传队列和逐文件进度
 - 普通文件附件随单次消息发送并在模型读取后删除；有效 JPG/PNG 原图按用户和对话隔离保留 30 天，继续处理时自动续期，删除对话时同步删除，消息中仅展示压缩缩略图
 - 证件照任务会在本地完成抠图、蓝/红/白底替换和一寸、二寸裁切，并返回 300 DPI JPG 下载
@@ -18,6 +19,7 @@
 - 普通用户查看个人用量，管理员查看全部用户汇总用量
 - Web 与 Android 端均可免登录使用，也支持内部账号、People OAuth 与 Permission 身份；对话和提示词按登录身份或匿名设备 ID 隔离
 - Android 15/16 原生客户端
+- 手机端输入消息时会按可视区域和软键盘高度自动抬升对话区；发现新版本只展示确认提示，用户同意前不会下载安装包
 
 ## 登录与集成
 
@@ -64,7 +66,7 @@ npm --prefix frontend install
 
 ## Docker 与公网部署
 
-仓库根目录的 `compose.yaml` 会构建后端和 Nginx 前端，并运行固定版本的本地图片处理服务。后端不直接暴露宿主机端口，Nginx 仅监听 `127.0.0.1:18082` 并将 `/api/` 同源反代到后端。图片处理服务不暴露宿主机端口，人像分割模型缓存在独立 volume 中，证件照原图不会发往第三方；会话原图只保存在后端私有 volume，可在同一对话中继续处理，保留期满或删除对话后清理。后端通过仅容器可见的 `people-services` 网络访问 People edge。SQLite、上传暂存目录和内部账号保存在 `workbench-data` volume。
+仓库根目录的 `compose.yaml` 会构建后端和 Nginx 前端，并运行固定版本的本地图片处理服务。后端镜像内置 LibreOffice、qpdf、Ghostscript、Poppler、ImageMagick 与 pdf2docx，所有文件转换都在工作台服务端本地完成，不会发送给模型或第三方转换站。后端不直接暴露宿主机端口，Nginx 仅监听 `127.0.0.1:18082` 并将 `/api/` 同源反代到后端。图片处理服务不暴露宿主机端口，人像分割模型缓存在独立 volume 中，证件照原图不会发往第三方；会话原图只保存在后端私有 volume，可在同一对话中继续处理，保留期满或删除对话后清理。后端通过仅容器可见的 `people-services` 网络访问 People edge。SQLite、上传暂存目录、转换结果和内部账号保存在 `workbench-data` volume。
 
 ```bash
 export AI_WORKBENCH_ENCRYPTION_KEY='替换为至少 32 字符的随机值'
@@ -90,7 +92,7 @@ APK 统一发布到 `https://apps.lxvb.top`，AI Workbench 不再维护自己的
 
 ## Android 客户端
 
-`android/` 是固定访问 `https://ai.lxvb.top` 的原生 WebView 客户端，移动界面采用全宽对话区、侧滑会话列表，并保留模型和推理档位选择。客户端支持匿名使用和 People 登录，包含兼容 Android 15/16 厂商文件选择器的系统多附件选择、返回导航、下载、Safe Browsing，以及通过统一应用中心检查、下载和安装新版本。它使用 `compileSdk 36`、`targetSdk 36`、`minSdk 35`，覆盖 Android 15 和 Android 16。
+`android/` 是固定访问 `https://ai.lxvb.top` 的原生 WebView 客户端，移动界面采用全宽对话区、侧滑会话列表，并保留模型和推理档位选择。客户端支持匿名使用和 People 登录，包含兼容 Android 15/16 厂商文件选择器的系统多附件选择、软键盘可视区域适配、返回导航、下载、Safe Browsing，以及通过统一应用中心检查、下载和安装新版本。自动检查只报告并提示可用版本，只有用户在确认框中选择“同意并下载”才会开始下载安装包。它使用 `compileSdk 36`、`targetSdk 36`、`minSdk 35`，覆盖 Android 15 和 Android 16。
 
 ```bash
 cd android

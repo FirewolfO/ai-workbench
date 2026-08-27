@@ -96,6 +96,32 @@ export type ReasoningEffort = 'fast' | 'medium' | 'high' | 'xhigh'
 export interface AvailableModel { id: string; name: string; defaultModel: string; models: string[]; webSearchEnabled: boolean; modelsUpdatedAt?: string }
 export interface Attachment { id: string; name: string; contentType: string; size: number; expiresAt: string }
 
+export interface FileToolChoice { label: string; value: string }
+export interface FileToolOption {
+  id: 'pageRange' | 'quality' | 'imageFormat' | 'maxWidth'
+  label: string
+  type: 'text' | 'select' | 'number'
+  placeholder?: string
+  default?: string | number
+  choices?: FileToolChoice[]
+}
+export interface FileTool {
+  id: string
+  name: string
+  description: string
+  category: string
+  icon: string
+  accept: string
+  multiple: boolean
+  minFiles: number
+  maxFiles: number
+  available: boolean
+  unavailableReason?: string
+  options?: FileToolOption[]
+}
+export interface FileToolRunOptions { pageRange?: string; quality?: string; imageFormat?: string; maxWidth?: number }
+export interface FileToolResult { name: string; contentType: string; size: number; summary: string; downloadUrl: string; expiresAt: string }
+
 export interface NewsArticle {
   id: string
   sourceCode: string

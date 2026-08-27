@@ -79,6 +79,8 @@ func New(address string, allowedOrigins []string, auth authenticator, service *w
 	mux.Handle("POST /api/v1/conversations/{id}/messages", server.userAccess(http.HandlerFunc(server.sendMessage)))
 	mux.Handle("POST /api/v1/conversations/{id}/messages/async", server.userAccess(http.HandlerFunc(server.queueMessage)))
 	mux.Handle("POST /api/v1/conversations/{id}/stop", server.userAccess(http.HandlerFunc(server.stopGeneration)))
+	mux.Handle("GET /api/v1/file-tools", server.userAccess(http.HandlerFunc(server.fileTools)))
+	mux.Handle("POST /api/v1/file-tools/{operation}", server.userAccess(http.HandlerFunc(server.runFileTool)))
 	mux.Handle("POST /api/v1/attachments", server.userAccess(http.HandlerFunc(server.createAttachment)))
 	mux.HandleFunc("GET /api/v1/attachments/{id}/download", server.downloadAttachment)
 	mux.Handle("DELETE /api/v1/attachments/{id}", server.userAccess(http.HandlerFunc(server.deleteAttachment)))
@@ -88,7 +90,7 @@ func New(address string, allowedOrigins []string, auth authenticator, service *w
 	mux.Handle("POST /api/v1/news/summaries", server.userAccess(http.HandlerFunc(server.summarizeNews)))
 	mux.Handle("PUT /api/v1/news/{id}/favorite", server.userAccess(http.HandlerFunc(server.favoriteNews)))
 	mux.Handle("GET /api/v1/frontier", server.userAccess(http.HandlerFunc(server.frontierProjects)))
-	return &http.Server{Addr: address, Handler: server.middleware(mux), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 120 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 120 * time.Second}
+	return &http.Server{Addr: address, Handler: server.middleware(mux), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 5 * time.Minute, WriteTimeout: 5 * time.Minute, IdleTimeout: 120 * time.Second}
 }
 
 func (s *Server) middleware(next http.Handler) http.Handler {
@@ -387,6 +389,63 @@ func (s *Server) stopGeneration(writer http.ResponseWriter, request *http.Reques
 	respond(writer, map[string]bool{"stopped": stopped}, err, http.StatusOK)
 }
 
+func (s *Server) fileTools(writer http.ResponseWriter, _ *http.Request) {
+	write(writer, http.StatusOK, s.workbench.FileTools())
+}
+
+func (s *Server) runFileTool(writer http.ResponseWriter, request *http.Request) {
+	const (
+		maxToolRequestBytes = 66 << 20
+		maxToolFileBytes    = 40 << 20
+	)
+	request.Body = http.MaxBytesReader(writer, request.Body, maxToolRequestBytes)
+	multipartReader, err := request.MultipartReader()
+	if err != nil {
+		fail(writer, http.StatusBadRequest, "INVALID_FILE_TOOL_INPUT", "请选择要处理的文件，单次最多 64 MiB")
+		return
+	}
+	var inputs []workbench.FileToolInput
+	options := workbench.FileToolOptions{}
+	for {
+		part, partErr := multipartReader.NextPart()
+		if errors.Is(partErr, io.EOF) {
+			break
+		}
+		if partErr != nil {
+			fail(writer, http.StatusBadRequest, "INVALID_FILE_TOOL_INPUT", "文件无效或单次处理超过 64 MiB")
+			return
+		}
+		if part.FileName() != "" && part.FormName() == "files" {
+			data, readErr := io.ReadAll(io.LimitReader(part, maxToolFileBytes+1))
+			_ = part.Close()
+			if readErr != nil || len(data) == 0 || len(data) > maxToolFileBytes || len(inputs) >= 12 {
+				fail(writer, http.StatusBadRequest, "INVALID_FILE_TOOL_INPUT", "单个文件最多 40 MiB，每次最多选择 12 个文件")
+				return
+			}
+			inputs = append(inputs, workbench.FileToolInput{Name: part.FileName(), ContentType: part.Header.Get("Content-Type"), Data: data})
+			continue
+		}
+		value, readErr := io.ReadAll(io.LimitReader(part, 1025))
+		_ = part.Close()
+		if readErr != nil || len(value) > 1024 {
+			fail(writer, http.StatusBadRequest, "INVALID_FILE_TOOL_INPUT", "工具参数无效")
+			return
+		}
+		switch part.FormName() {
+		case "pageRange":
+			options.PageRange = string(value)
+		case "quality":
+			options.Quality = string(value)
+		case "imageFormat":
+			options.ImageFormat = string(value)
+		case "maxWidth":
+			options.MaxWidth, _ = strconv.Atoi(strings.TrimSpace(string(value)))
+		}
+	}
+	result, err := s.workbench.RunFileTool(request.Context(), actor(request), request.PathValue("operation"), inputs, options)
+	respond(writer, result, err, http.StatusCreated)
+}
+
 func (s *Server) createAttachment(writer http.ResponseWriter, request *http.Request) {
 	request.Body = http.MaxBytesReader(writer, request.Body, (8<<20)+(1<<20))
 	multipartReader, err := request.MultipartReader()
@@ -551,6 +610,10 @@ func failError(writer http.ResponseWriter, err error) {
 		fail(writer, http.StatusBadGateway, "MODEL_UNAVAILABLE", strings.TrimPrefix(err.Error(), workbench.ErrProvider.Error()+": "))
 	case errors.Is(err, workbench.ErrNoProvider):
 		fail(writer, http.StatusConflict, "MODEL_NOT_CONFIGURED", "请先配置并启用一个模型连接")
+	case errors.Is(err, workbench.ErrToolUnavailable):
+		fail(writer, http.StatusServiceUnavailable, "FILE_TOOL_UNAVAILABLE", "该转换组件正在维护，请稍后重试")
+	case errors.Is(err, workbench.ErrToolFailed):
+		fail(writer, http.StatusUnprocessableEntity, "FILE_CONVERSION_FAILED", "文件转换失败，文件可能损坏、加密或格式不受支持")
 	default:
 		log.Printf("AI Workbench request failed: %v", err)
 		fail(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "服务暂时不可用")
